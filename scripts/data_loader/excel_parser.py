@@ -110,7 +110,7 @@ def parse_google_sheet(sheet_url=None, sheet_name=None):
     """
     try:
         import gspread
-        from google.auth.default import default as google_auth_default
+        from google.auth import default as google_auth_default
     except ImportError:
         raise ImportError(
             "Google Sheets support requires gspread and google-auth.\n"
