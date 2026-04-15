@@ -1,0 +1,10 @@
+*.pyc
+*.ipynb_checkpoints
+*.tflite
+*.mlpackage
+*.zst
+*.pt
+*.onnx
+*.pb
+*.json
+*.csv
