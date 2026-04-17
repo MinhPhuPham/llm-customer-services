@@ -15,8 +15,24 @@ import os
 
 import numpy as np
 import torch
+import torch.nn as nn
 
 from scripts.config import MAX_SEQ_LENGTH, EXPORT_DIR
+
+
+class _LogitsWrapper(nn.Module):
+    """Wraps a HF classifier to return only the logits tensor.
+
+    HuggingFace models return a dict-like SequenceClassifierOutput.
+    ONNX export needs a clean tensor output for reliable conversion.
+    """
+
+    def __init__(self, hf_model):
+        super().__init__()
+        self.model = hf_model
+
+    def forward(self, input_ids, attention_mask):
+        return self.model(input_ids=input_ids, attention_mask=attention_mask).logits
 
 
 def export_tflite(tokenizer=None, calibration_texts=None, export_dir=None):
@@ -48,15 +64,15 @@ def export_tflite(tokenizer=None, calibration_texts=None, export_dir=None):
     from transformers import AutoModelForSequenceClassification
 
     print("  [1/3] PyTorch → ONNX...")
-    model = AutoModelForSequenceClassification.from_pretrained(best_dir)
-    model.eval().cpu()
+    hf_model = AutoModelForSequenceClassification.from_pretrained(best_dir)
+    wrapper = _LogitsWrapper(hf_model).eval().cpu().float()
 
     dummy_ids = torch.randint(0, 100, (1, MAX_SEQ_LENGTH), dtype=torch.long)
     dummy_mask = torch.ones(1, MAX_SEQ_LENGTH, dtype=torch.long)
 
     with torch.no_grad():
         torch.onnx.export(
-            model,
+            wrapper,
             (dummy_ids, dummy_mask),
             onnx_path,
             input_names=['input_ids', 'attention_mask'],
@@ -85,7 +101,6 @@ def export_tflite(tokenizer=None, calibration_texts=None, export_dir=None):
     print("  [3/3] TF SavedModel → TFLite (INT8)...")
     import tensorflow as tf
 
-    # Build representative dataset for full INT8 quantization
     representative_fn = None
     if tokenizer is not None and calibration_texts is not None:
         cal_samples = calibration_texts[:200]
@@ -106,7 +121,6 @@ def export_tflite(tokenizer=None, calibration_texts=None, export_dir=None):
     else:
         print("        No calibration data — using dynamic range quantization")
 
-    # Convert with TFLite
     converter = tf.lite.TFLiteConverter.from_saved_model(saved_model_dir)
     converter.optimizations = [tf.lite.Optimize.DEFAULT]
 

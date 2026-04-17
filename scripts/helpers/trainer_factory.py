@@ -67,18 +67,31 @@ def build_trainer(base_model, kept_ids, num_labels, train_ds, val_ds, tokenizer)
     else:
         classifier.base_model.embeddings.word_embeddings = base_model.embeddings.word_embeddings
     classifier.config.vocab_size = len(kept_ids)
+
+    # Freeze pretrained layers — only train the classifier head.
+    # mmBERT already understands EN+JA; with few samples (<500),
+    # fine-tuning all 42M params causes severe overfitting.
+    for param in classifier.base_model.parameters():
+        param.requires_grad = False
+
     classifier.to(DEVICE)
 
-    param_count = sum(p.numel() for p in classifier.parameters())
-    print(f"  Classifier: {param_count:,} params, {num_labels} intents")
+    total_params = sum(p.numel() for p in classifier.parameters())
+    trainable_params = sum(p.numel() for p in classifier.parameters() if p.requires_grad)
+    frozen_params = total_params - trainable_params
+    print(f"  Total: {total_params:,} params, {num_labels} intents")
+    print(f"  Trainable: {trainable_params:,} (classifier head)")
+    print(f"  Frozen: {frozen_params:,} (pretrained base)")
 
-    # Training arguments
+    # Training arguments — higher LR for head-only training
+    head_lr = 1e-3
+
     training_args = TrainingArguments(
         output_dir=MODEL_DIR,
         num_train_epochs=NUM_EPOCHS,
         per_device_train_batch_size=BATCH_SIZE,
         per_device_eval_batch_size=min(BATCH_SIZE * 2, 4096),
-        learning_rate=LEARNING_RATE,
+        learning_rate=head_lr,
         weight_decay=0.01,
         warmup_ratio=0.1,
         lr_scheduler_type='cosine',
@@ -103,7 +116,7 @@ def build_trainer(base_model, kept_ids, num_labels, train_ds, val_ds, tokenizer)
         compute_metrics=compute_metrics,
     )
 
-    print(f"  Epochs: {NUM_EPOCHS}, Batch: {BATCH_SIZE}, LR: {LEARNING_RATE}")
+    print(f"  Epochs: {NUM_EPOCHS}, Batch: {BATCH_SIZE}, LR: {head_lr}")
     return trainer, classifier
 
 

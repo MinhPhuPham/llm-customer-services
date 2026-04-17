@@ -10,9 +10,26 @@ import os
 
 import numpy as np
 import torch
+import torch.nn as nn
 import coremltools as ct
 
 from scripts.config import MAX_SEQ_LENGTH, EXPORT_DIR
+
+
+class _LogitsWrapper(nn.Module):
+    """Wraps a HF classifier to return only the logits tensor.
+
+    HuggingFace models return a dict-like SequenceClassifierOutput,
+    which produces a `dictconstruct` op that CoreML can't convert.
+    This wrapper extracts just the logits for clean tracing.
+    """
+
+    def __init__(self, hf_model):
+        super().__init__()
+        self.model = hf_model
+
+    def forward(self, input_ids, attention_mask):
+        return self.model(input_ids=input_ids, attention_mask=attention_mask).logits
 
 
 def export_coreml(trainer, tokenizer, export_dir=None):
@@ -40,15 +57,15 @@ def export_coreml(trainer, tokenizer, export_dir=None):
     tokenizer.save_pretrained(best_dir)
     print(f"  Saved PyTorch model to {best_dir}")
 
-    # Prepare for tracing — must convert to float32 for CPU tracing
-    best_model = trainer.model.eval().cpu().float()
+    # Wrap model to return only logits tensor (not dict)
+    wrapper = _LogitsWrapper(trainer.model).eval().cpu().float()
 
     dummy_ids = torch.randint(0, 100, (1, MAX_SEQ_LENGTH), dtype=torch.long)
     dummy_mask = torch.ones(1, MAX_SEQ_LENGTH, dtype=torch.long)
 
     # TorchScript trace
     with torch.no_grad():
-        traced = torch.jit.trace(best_model, (dummy_ids, dummy_mask), strict=False)
+        traced = torch.jit.trace(wrapper, (dummy_ids, dummy_mask), strict=False)
 
     # Convert to CoreML
     mlmodel = ct.convert(
