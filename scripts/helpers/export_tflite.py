@@ -78,7 +78,7 @@ def export_tflite(tokenizer=None, calibration_texts=None, export_dir=None):
             input_names=['input_ids', 'attention_mask'],
             output_names=['logits'],
             dynamic_axes=None,
-            opset_version=14,
+            opset_version=17,
             do_constant_folding=True,
         )
     print(f"        Saved ONNX: {os.path.getsize(onnx_path) / 1e6:.1f}MB")

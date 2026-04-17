@@ -1,9 +1,11 @@
 # ===========================================================
-# export_coreml.py — PyTorch → CoreML .mlpackage (FP16)
+# export_coreml.py — PyTorch → ONNX → CoreML .mlpackage (FP16)
 # ===========================================================
 """
 Exports the trained PyTorch classifier to CoreML format
 for on-device iOS inference via Apple Neural Engine.
+
+Pipeline: PyTorch → ONNX → CoreML (avoids JIT trace dict issues)
 """
 
 import os
@@ -17,12 +19,7 @@ from scripts.config import MAX_SEQ_LENGTH, EXPORT_DIR
 
 
 class _LogitsWrapper(nn.Module):
-    """Wraps a HF classifier to return only the logits tensor.
-
-    HuggingFace models return a dict-like SequenceClassifierOutput,
-    which produces a `dictconstruct` op that CoreML can't convert.
-    This wrapper extracts just the logits for clean tracing.
-    """
+    """Wraps a HF classifier to return only the logits tensor."""
 
     def __init__(self, hf_model):
         super().__init__()
@@ -46,6 +43,7 @@ def export_coreml(trainer, tokenizer, export_dir=None):
         coreml_size_mb: Size in MB.
     """
     export_dir = export_dir or EXPORT_DIR
+    onnx_path = os.path.join(export_dir, 'model_coreml.onnx')
 
     print("=" * 60)
     print("EXPORT: CoreML (iOS)")
@@ -57,19 +55,29 @@ def export_coreml(trainer, tokenizer, export_dir=None):
     tokenizer.save_pretrained(best_dir)
     print(f"  Saved PyTorch model to {best_dir}")
 
-    # Wrap model to return only logits tensor (not dict)
+    # Step 1: PyTorch → ONNX (handles dict outputs correctly)
+    print("  [1/2] PyTorch → ONNX...")
     wrapper = _LogitsWrapper(trainer.model).eval().cpu().float()
 
     dummy_ids = torch.randint(0, 100, (1, MAX_SEQ_LENGTH), dtype=torch.long)
     dummy_mask = torch.ones(1, MAX_SEQ_LENGTH, dtype=torch.long)
 
-    # TorchScript trace
     with torch.no_grad():
-        traced = torch.jit.trace(wrapper, (dummy_ids, dummy_mask), strict=False)
+        torch.onnx.export(
+            wrapper,
+            (dummy_ids, dummy_mask),
+            onnx_path,
+            input_names=['input_ids', 'attention_mask'],
+            output_names=['logits'],
+            dynamic_axes=None,
+            opset_version=17,
+            do_constant_folding=True,
+        )
 
-    # Convert to CoreML
+    # Step 2: ONNX → CoreML
+    print("  [2/2] ONNX → CoreML...")
     mlmodel = ct.convert(
-        traced,
+        onnx_path,
         inputs=[
             ct.TensorType(
                 name='input_ids',
@@ -102,4 +110,9 @@ def export_coreml(trainer, tokenizer, export_dir=None):
     ) / 1e6
 
     print(f"  CoreML: {coreml_size:.1f}MB (FP16)")
+
+    # Cleanup
+    if os.path.exists(onnx_path):
+        os.remove(onnx_path)
+
     return coreml_path, coreml_size
