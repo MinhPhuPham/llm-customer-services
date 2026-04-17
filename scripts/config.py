@@ -60,7 +60,7 @@ def detect_device():
     """Detect GPU and return (device, dtype, gpu_info)."""
     if torch.cuda.is_available():
         gpu_name = torch.cuda.get_device_name(0)
-        gpu_mem = torch.cuda.get_device_properties(0).total_mem / 1e9
+        gpu_mem = torch.cuda.get_device_properties(0).total_memory / 1e9
         device = 'cuda'
         dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
         return device, dtype, f"{gpu_name} ({gpu_mem:.1f}GB)"
