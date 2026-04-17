@@ -57,17 +57,19 @@ PLATFORM = detect_platform()
 # GPU / DEVICE
 # ===========================================================
 def detect_device():
-    """Detect GPU and return (device, dtype, gpu_info)."""
+    """Detect GPU and return (device, dtype, gpu_info, is_high_end)."""
     if torch.cuda.is_available():
         gpu_name = torch.cuda.get_device_name(0)
         gpu_mem = torch.cuda.get_device_properties(0).total_memory / 1e9
         device = 'cuda'
         dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-        return device, dtype, f"{gpu_name} ({gpu_mem:.1f}GB)"
-    return 'cpu', torch.float32, None
+        # High-end GPUs: A100, H100, A10, etc. (support bf16 and have >30GB)
+        is_high_end = torch.cuda.is_bf16_supported() and gpu_mem > 30
+        return device, dtype, f"{gpu_name} ({gpu_mem:.1f}GB)", is_high_end
+    return 'cpu', torch.float32, None, False
 
 
-DEVICE, DTYPE, GPU_INFO = detect_device()
+DEVICE, DTYPE, GPU_INFO, IS_HIGH_END_GPU = detect_device()
 
 
 # ===========================================================
@@ -107,16 +109,23 @@ if TESTING_MODE:
     NUM_EPOCHS = 3
     BATCH_SIZE = 32
     LEARNING_RATE = 2e-5
-else:
-    # Large-batch recipe for A100 (Colab/Kaggle).
+elif IS_HIGH_END_GPU:
+    # Large-batch recipe for A100/H100 (Colab/Kaggle).
     # Sqrt LR scaling rule (Hoffer et al. 2017):
     #   LR_new = LR_base × sqrt(batch_new / batch_base)
     #   1.6e-4 = 2e-5  × sqrt(2048 / 32)
     # 30 epochs ensures enough optimizer steps even for small datasets
     # (e.g. 55 samples → 1 step/epoch → 30 total steps).
-    NUM_EPOCHS = 15
-    BATCH_SIZE = 2048 if DEVICE == 'cuda' else 16
+    NUM_EPOCHS = 30
+    BATCH_SIZE = 2048
     LEARNING_RATE = 1.6e-4
+else:
+    # Standard recipe for T4/V100/consumer GPUs or CPU.
+    # Smaller batch + standard LR for stable training.
+    # More epochs to compensate for smaller batch updates.
+    NUM_EPOCHS = 30
+    BATCH_SIZE = 32 if DEVICE == 'cuda' else 16
+    LEARNING_RATE = 2e-5
 
 
 # ===========================================================
@@ -133,10 +142,12 @@ REPO_NAME = '<YourRepoName>'
 def print_config():
     """Print current configuration summary."""
     mode = "TESTING" if TESTING_MODE else "PRODUCTION"
+    gpu_mode = "Large-batch (A100)" if IS_HIGH_END_GPU else "Standard-batch"
     print("=" * 60)
     print(f"  Platform:    {PLATFORM}")
     print(f"  Mode:        {mode}")
     print(f"  Device:      {DEVICE} ({GPU_INFO or 'CPU — will be slow'})")
+    print(f"  GPU mode:    {gpu_mode}")
     print(f"  Base model:  {BASE_MODEL}")
     print(f"  Epochs:      {NUM_EPOCHS}, Batch: {BATCH_SIZE}, LR: {LEARNING_RATE}")
     print(f"  Max seq len: {MAX_SEQ_LENGTH}")

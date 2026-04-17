@@ -1,21 +1,20 @@
 # ===========================================================
-# export_tflite.py — PyTorch → TFLite .tflite (INT8)
+# export_tflite.py — PyTorch → ONNX → TFLite (INT8)
 # ===========================================================
 """
 Exports the trained model to TFLite format with INT8 quantization
 for Android (NNAPI/GPU delegate).
 
+Pipeline: PyTorch → ONNX → TF SavedModel → TFLite (INT8)
+
 When calibration data is provided, uses full INT8 quantization
 (both weights and activations) for best on-device performance.
-Otherwise falls back to INT8 dynamic range quantization.
-
-Tries TFLITE_BUILTINS-only first to avoid the ~20MB TF Flex
-delegate; falls back to SELECT_TF_OPS if needed.
 """
 
 import os
 
 import numpy as np
+import torch
 
 from scripts.config import MAX_SEQ_LENGTH, EXPORT_DIR
 
@@ -36,31 +35,55 @@ def export_tflite(tokenizer=None, calibration_texts=None, export_dir=None):
     """
     export_dir = export_dir or EXPORT_DIR
     best_dir = os.path.join(export_dir, 'best_pytorch')
+    onnx_path = os.path.join(export_dir, 'model.onnx')
+    saved_model_dir = os.path.join(export_dir, 'tf_saved_model')
 
     print("=" * 60)
     print("EXPORT: TFLite (Android)")
     print("=" * 60)
 
-    # Lazy import — tensorflow only loaded when export is called
-    import tensorflow as tf
-    from transformers import TFAutoModelForSequenceClassification
+    # -------------------------------------------------------
+    # Step 1: PyTorch → ONNX
+    # -------------------------------------------------------
+    from transformers import AutoModelForSequenceClassification
 
-    # Load as TF model from PyTorch weights
-    tf_model = TFAutoModelForSequenceClassification.from_pretrained(
-        best_dir, from_pt=True
-    )
+    print("  [1/3] PyTorch → ONNX...")
+    model = AutoModelForSequenceClassification.from_pretrained(best_dir)
+    model.eval().cpu()
 
-    # Concrete function with fixed input shape
-    @tf.function(input_signature=[
-        tf.TensorSpec([1, MAX_SEQ_LENGTH], tf.int32, name='input_ids'),
-        tf.TensorSpec([1, MAX_SEQ_LENGTH], tf.int32, name='attention_mask'),
-    ])
-    def serve(input_ids, attention_mask):
-        output = tf_model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
+    dummy_ids = torch.randint(0, 100, (1, MAX_SEQ_LENGTH), dtype=torch.long)
+    dummy_mask = torch.ones(1, MAX_SEQ_LENGTH, dtype=torch.long)
+
+    with torch.no_grad():
+        torch.onnx.export(
+            model,
+            (dummy_ids, dummy_mask),
+            onnx_path,
+            input_names=['input_ids', 'attention_mask'],
+            output_names=['logits'],
+            dynamic_axes=None,
+            opset_version=14,
+            do_constant_folding=True,
         )
-        return {'logits': output.logits}
+    print(f"        Saved ONNX: {os.path.getsize(onnx_path) / 1e6:.1f}MB")
+
+    # -------------------------------------------------------
+    # Step 2: ONNX → TF SavedModel
+    # -------------------------------------------------------
+    print("  [2/3] ONNX → TF SavedModel...")
+    import onnx
+    from onnx_tf.backend import prepare
+
+    onnx_model = onnx.load(onnx_path)
+    tf_rep = prepare(onnx_model)
+    tf_rep.export_graph(saved_model_dir)
+    print(f"        Saved TF model to {saved_model_dir}")
+
+    # -------------------------------------------------------
+    # Step 3: TF SavedModel → TFLite (INT8)
+    # -------------------------------------------------------
+    print("  [3/3] TF SavedModel → TFLite (INT8)...")
+    import tensorflow as tf
 
     # Build representative dataset for full INT8 quantization
     representative_fn = None
@@ -79,39 +102,21 @@ def export_tflite(tokenizer=None, calibration_texts=None, export_dir=None):
                     enc['attention_mask'].astype(np.int32),
                 ]
 
-        print(f"  Calibration: {len(cal_samples)} samples for full INT8")
+        print(f"        Calibration: {len(cal_samples)} samples for full INT8")
     else:
-        print("  No calibration data — using dynamic range quantization")
+        print("        No calibration data — using dynamic range quantization")
 
-    # Convert: try TFLITE_BUILTINS only first (avoids ~20MB Flex delegate),
-    # fall back to SELECT_TF_OPS if the model uses unsupported ops.
-    concrete_fn = serve.get_concrete_function()
-    tflite_model = None
+    # Convert with TFLite
+    converter = tf.lite.TFLiteConverter.from_saved_model(saved_model_dir)
+    converter.optimizations = [tf.lite.Optimize.DEFAULT]
 
-    ops_configs = [
-        ('TFLITE_BUILTINS', [tf.lite.OpsSet.TFLITE_BUILTINS]),
-        ('TFLITE_BUILTINS + SELECT_TF_OPS', [
-            tf.lite.OpsSet.TFLITE_BUILTINS,
-            tf.lite.OpsSet.SELECT_TF_OPS,
-        ]),
-    ]
+    if representative_fn is not None:
+        converter.representative_dataset = representative_fn
+        converter.target_spec.supported_ops = [tf.lite.OpsSet.TFLITE_BUILTINS_INT8]
+        converter.inference_input_type = tf.int32
+        converter.inference_output_type = tf.float32
 
-    for ops_label, ops in ops_configs:
-        try:
-            converter = tf.lite.TFLiteConverter.from_concrete_functions(
-                [concrete_fn]
-            )
-            converter.optimizations = [tf.lite.Optimize.DEFAULT]
-            if representative_fn is not None:
-                converter.representative_dataset = representative_fn
-            converter.target_spec.supported_ops = ops
-            tflite_model = converter.convert()
-            print(f"  Ops: {ops_label}")
-            break
-        except Exception as e:
-            if ops_label == ops_configs[-1][0]:
-                raise
-            print(f"  {ops_label} failed, retrying with SELECT_TF_OPS...")
+    tflite_model = converter.convert()
 
     # Save
     tflite_path = os.path.join(export_dir, 'support_ai.tflite')
@@ -121,5 +126,9 @@ def export_tflite(tokenizer=None, calibration_texts=None, export_dir=None):
     tflite_size = os.path.getsize(tflite_path) / 1e6
     quant_type = 'full INT8' if representative_fn else 'INT8 dynamic range'
     print(f"  TFLite: {tflite_size:.1f}MB ({quant_type})")
+
+    # Cleanup intermediate files
+    if os.path.exists(onnx_path):
+        os.remove(onnx_path)
 
     return tflite_path, tflite_size

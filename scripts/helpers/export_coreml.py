@@ -40,14 +40,15 @@ def export_coreml(trainer, tokenizer, export_dir=None):
     tokenizer.save_pretrained(best_dir)
     print(f"  Saved PyTorch model to {best_dir}")
 
-    # Prepare for tracing
-    best_model = trainer.model.eval().cpu()
+    # Prepare for tracing — must convert to float32 for CPU tracing
+    best_model = trainer.model.eval().cpu().float()
 
     dummy_ids = torch.randint(0, 100, (1, MAX_SEQ_LENGTH), dtype=torch.long)
     dummy_mask = torch.ones(1, MAX_SEQ_LENGTH, dtype=torch.long)
 
     # TorchScript trace
-    traced = torch.jit.trace(best_model, (dummy_ids, dummy_mask), strict=False)
+    with torch.no_grad():
+        traced = torch.jit.trace(best_model, (dummy_ids, dummy_mask), strict=False)
 
     # Convert to CoreML
     mlmodel = ct.convert(
