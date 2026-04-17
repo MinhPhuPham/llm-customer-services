@@ -1,17 +1,15 @@
 # ===========================================================
-# export_tflite.py — PyTorch → TFLite via ai-edge-torch
+# export_tflite.py — PyTorch → TFLite via ONNX + onnx2tf
 # ===========================================================
 """
 Exports the trained model to TFLite for Android (NNAPI/GPU delegate).
 
-Uses ai-edge-torch — Google's official 2024 PyTorch → TFLite converter.
-Skips the dead onnx/onnx-tf chain entirely (StableHLO intermediate).
-
-Key trick: set `return_dict=False` on the HF model so it returns
-a plain tuple instead of SequenceClassifierOutput dict.
+Pipeline: PyTorch → ONNX (opset 17) → TF SavedModel (onnx2tf) → TFLite.
+Uses TensorFlow's native TFLiteConverter for dynamic range INT8 quantization.
 """
 
 import os
+import tempfile
 
 import numpy as np
 import torch
@@ -39,7 +37,7 @@ class _FlatWrapper(nn.Module):
 
 def export_tflite(tokenizer=None, calibration_texts=None, export_dir=None):
     """
-    Export model to TFLite .tflite via ai-edge-torch.
+    Export model to TFLite via ONNX → onnx2tf → TFLiteConverter.
 
     Args:
         tokenizer: Unused (kept for API compatibility).
@@ -57,45 +55,65 @@ def export_tflite(tokenizer=None, calibration_texts=None, export_dir=None):
     print("EXPORT: TFLite (Android)")
     print("=" * 60)
 
-    # Lazy imports — heavy deps only needed at export time
-    import ai_edge_torch
     from transformers import AutoModelForSequenceClassification
 
-    # Load saved PyTorch model and wrap
     print("  Loading saved model...")
     hf_model = AutoModelForSequenceClassification.from_pretrained(best_dir)
     wrapper = _FlatWrapper(hf_model).eval().cpu().float()
 
     dummy_ids = torch.randint(0, 100, (1, MAX_SEQ_LENGTH), dtype=torch.long)
     dummy_mask = torch.ones(1, MAX_SEQ_LENGTH, dtype=torch.long)
-    sample_inputs = (dummy_ids, dummy_mask)
 
-    # Apply dynamic INT8 quantization (no calibration needed, ~4x smaller)
-    print("  Converting PyTorch → TFLite (dynamic INT8)...")
-    try:
-        from ai_edge_torch.quantize.pt2e_quantizer import (
-            PT2EQuantizer, get_symmetric_quantization_config,
-        )
-        from ai_edge_torch.quantize.quant_config import QuantConfig
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        onnx_path = os.path.join(tmp_dir, 'model.onnx')
 
-        quantizer = PT2EQuantizer().set_global(
-            get_symmetric_quantization_config(
-                is_per_channel=True, is_dynamic=True,
+        # Step 1: PyTorch → ONNX
+        print("  [1/3] PyTorch → ONNX (opset 17)...")
+        with torch.no_grad():
+            torch.onnx.export(
+                wrapper,
+                (dummy_ids, dummy_mask),
+                onnx_path,
+                input_names=['input_ids', 'attention_mask'],
+                output_names=['logits'],
+                dynamic_axes={
+                    'input_ids': {0: 'batch'},
+                    'attention_mask': {0: 'batch'},
+                    'logits': {0: 'batch'},
+                },
+                opset_version=17,
             )
+
+        # Step 2: ONNX → TF SavedModel
+        print("  [2/3] ONNX → TF SavedModel (onnx2tf)...")
+        import onnx2tf
+        saved_model_dir = os.path.join(tmp_dir, 'tf_saved_model')
+        onnx2tf.convert(
+            input_onnx_file_path=onnx_path,
+            output_folder_path=saved_model_dir,
+            non_verbose=True,
+            copy_onnx_input_output_names_to_tflite=True,
         )
-        edge_model = ai_edge_torch.convert(
-            wrapper, sample_inputs,
-            quant_config=QuantConfig(pt2e_quantizer=quantizer),
-        )
-        quant_label = 'dynamic INT8'
-    except Exception as e:
-        print(f"  Quantization failed ({type(e).__name__}: {e}), falling back to FP32")
-        edge_model = ai_edge_torch.convert(wrapper, sample_inputs)
-        quant_label = 'FP32'
+
+        # Step 3: TF SavedModel → TFLite (dynamic range INT8)
+        print("  [3/3] SavedModel → TFLite (dynamic INT8)...")
+        import tensorflow as tf
+        converter = tf.lite.TFLiteConverter.from_saved_model(saved_model_dir)
+        converter.optimizations = [tf.lite.Optimize.DEFAULT]
+
+        try:
+            tflite_model = converter.convert()
+            quant_label = 'dynamic INT8'
+        except Exception as e:
+            print(f"  INT8 failed ({type(e).__name__}: {e}), falling back to FP32")
+            converter = tf.lite.TFLiteConverter.from_saved_model(saved_model_dir)
+            tflite_model = converter.convert()
+            quant_label = 'FP32'
 
     # Save
     tflite_path = os.path.join(export_dir, 'support_ai.tflite')
-    edge_model.export(tflite_path)
+    with open(tflite_path, 'wb') as f:
+        f.write(tflite_model)
 
     tflite_size = os.path.getsize(tflite_path) / 1e6
     print(f"  TFLite: {tflite_size:.1f}MB ({quant_label})")
