@@ -37,6 +37,19 @@ class TFLiteEvaluator:
         self.inp_details = self.interpreter.get_input_details()
         self.out_details = self.interpreter.get_output_details()
 
+        # Map input names → indices (onnx2tf may reorder inputs)
+        self._input_index = {}
+        for detail in self.inp_details:
+            name = detail['name'].lower()
+            if 'input_id' in name:
+                self._input_index['input_ids'] = detail['index']
+            elif 'attention' in name or 'mask' in name:
+                self._input_index['attention_mask'] = detail['index']
+        # Fallback: assume positional order if names don't match
+        if 'input_ids' not in self._input_index:
+            self._input_index['input_ids'] = self.inp_details[0]['index']
+            self._input_index['attention_mask'] = self.inp_details[1]['index']
+
     def predict(self, text, lang='en', threshold=None):
         """
         Run inference on a single text.
@@ -61,11 +74,11 @@ class TFLiteEvaluator:
         )
 
         self.interpreter.set_tensor(
-            self.inp_details[0]['index'],
+            self._input_index['input_ids'],
             enc['input_ids'].astype(np.int32),
         )
         self.interpreter.set_tensor(
-            self.inp_details[1]['index'],
+            self._input_index['attention_mask'],
             enc['attention_mask'].astype(np.int32),
         )
         self.interpreter.invoke()

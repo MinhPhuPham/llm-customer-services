@@ -45,7 +45,7 @@ def prune_vocabulary(tokenizer, texts, export_dir=None):
     print("=" * 60)
 
     # Load base model
-    base_model = AutoModel.from_pretrained(BASE_MODEL, dtype=DTYPE)
+    base_model = AutoModel.from_pretrained(BASE_MODEL, torch_dtype=DTYPE)
     original_vocab = tokenizer.vocab_size
     original_params = sum(p.numel() for p in base_model.parameters())
     print(f"  Original: {original_vocab:,} vocab, {original_params:,} params")

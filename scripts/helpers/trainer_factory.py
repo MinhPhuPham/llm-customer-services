@@ -58,7 +58,7 @@ def build_trainer(base_model, kept_ids, num_labels, train_ds, val_ds, tokenizer)
     classifier = AutoModelForSequenceClassification.from_pretrained(
         BASE_MODEL,
         num_labels=num_labels,
-        dtype=DTYPE,
+        torch_dtype=DTYPE,
     )
 
     # Apply pruned embeddings (ModernBERT uses 'tok_embeddings', BERT uses 'word_embeddings')
