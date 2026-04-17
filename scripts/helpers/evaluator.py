@@ -11,7 +11,6 @@ Evaluates the exported TFLite model:
 import time
 
 import numpy as np
-import tensorflow as tf
 
 from scripts.config import MAX_SEQ_LENGTH, LANG_PREFIX, CONFIDENCE_THRESHOLD
 
@@ -28,6 +27,9 @@ class TFLiteEvaluator:
         """
         self.tokenizer = tokenizer
         self.label_map = label_map
+
+        # Lazy import — tensorflow only loaded when evaluator is used
+        import tensorflow as tf
 
         # Load interpreter
         self.interpreter = tf.lite.Interpreter(model_path=tflite_path)

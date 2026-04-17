@@ -16,8 +16,6 @@ delegate; falls back to SELECT_TF_OPS if needed.
 import os
 
 import numpy as np
-import tensorflow as tf
-from transformers import TFAutoModelForSequenceClassification
 
 from scripts.config import MAX_SEQ_LENGTH, EXPORT_DIR
 
@@ -42,6 +40,10 @@ def export_tflite(tokenizer=None, calibration_texts=None, export_dir=None):
     print("=" * 60)
     print("EXPORT: TFLite (Android)")
     print("=" * 60)
+
+    # Lazy import — tensorflow only loaded when export is called
+    import tensorflow as tf
+    from transformers import TFAutoModelForSequenceClassification
 
     # Load as TF model from PyTorch weights
     tf_model = TFAutoModelForSequenceClassification.from_pretrained(

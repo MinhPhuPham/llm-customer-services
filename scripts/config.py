@@ -113,8 +113,8 @@ else:
     #   LR_new = LR_base × sqrt(batch_new / batch_base)
     #   1.6e-4 = 2e-5  × sqrt(2048 / 32)
     # 30 epochs ensures enough optimizer steps even for small datasets
-    # (e.g. 1000 samples → 1 step/epoch → 30 total steps).
-    NUM_EPOCHS = 10
+    # (e.g. 55 samples → 1 step/epoch → 30 total steps).
+    NUM_EPOCHS = 15
     BATCH_SIZE = 2048 if DEVICE == 'cuda' else 16
     LEARNING_RATE = 1.6e-4
 

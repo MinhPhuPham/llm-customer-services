@@ -41,14 +41,14 @@ scripts/
     └── evaluator.py             # TFLite inference + EN/JA tests + latency
 
 notebook/
-└── train.ipynb                  # Colab notebook — step-by-step with Google Sheets support
+└── train_customer_services_model.ipynb                  # Colab notebook — step-by-step with Google Sheets support
 ```
 
 ---
 
 ## Quick Start (Colab)
 
-1. Open `notebook/train.ipynb` in Colab
+1. Open `notebook/train_customer_services_model.ipynb` in Colab
 2. Fill in `GITHUB_TOKEN`, `REPO_OWNER`, `REPO_NAME`
 3. Run all cells
 
