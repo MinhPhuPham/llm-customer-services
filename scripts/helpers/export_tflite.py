@@ -4,7 +4,7 @@
 """
 Exports the trained model to TFLite for Android (NNAPI/GPU delegate).
 
-Pipeline: PyTorch → ONNX (opset 17) → onnx2tf → TFLite.
+Pipeline: PyTorch → ONNX (opset 18) → onnx2tf → TFLite.
 
 onnx2tf v2.4+ uses a flatbuffer_direct backend by default, producing
 .tflite files directly without needing TensorFlow. If a SavedModel is
@@ -92,7 +92,7 @@ def export_tflite(tokenizer=None, calibration_texts=None, export_dir=None):
         out_dir = os.path.join(tmp_dir, 'onnx2tf_out')
 
         # Step 1: PyTorch → ONNX
-        print("  [1/3] PyTorch → ONNX (opset 17)...")
+        print("  [1/3] PyTorch → ONNX (opset 18)...")
         with torch.no_grad():
             torch.onnx.export(
                 wrapper,
@@ -105,7 +105,7 @@ def export_tflite(tokenizer=None, calibration_texts=None, export_dir=None):
                     'attention_mask': {0: 'batch'},
                     'logits': {0: 'batch'},
                 },
-                opset_version=17,
+                opset_version=18,
             )
 
         # Step 2: ONNX → TFLite via onnx2tf
