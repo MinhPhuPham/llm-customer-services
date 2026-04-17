@@ -1,14 +1,14 @@
 # ===========================================================
-# export_tflite.py — PyTorch → ONNX → TFLite (INT8)
+# export_tflite.py — PyTorch → TFLite via ai-edge-torch
 # ===========================================================
 """
-Exports the trained model to TFLite format with INT8 quantization
-for Android (NNAPI/GPU delegate).
+Exports the trained model to TFLite for Android (NNAPI/GPU delegate).
 
-Pipeline: PyTorch → ONNX → TF SavedModel → TFLite (INT8)
+Uses ai-edge-torch — Google's official 2024 PyTorch → TFLite converter.
+Skips the dead onnx/onnx-tf chain entirely (StableHLO intermediate).
 
-When calibration data is provided, uses full INT8 quantization
-(both weights and activations) for best on-device performance.
+Key trick: set `return_dict=False` on the HF model so it returns
+a plain tuple instead of SequenceClassifierOutput dict.
 """
 
 import os
@@ -20,29 +20,30 @@ import torch.nn as nn
 from scripts.config import MAX_SEQ_LENGTH, EXPORT_DIR
 
 
-class _LogitsWrapper(nn.Module):
-    """Wraps a HF classifier to return only the logits tensor.
-
-    HuggingFace models return a dict-like SequenceClassifierOutput.
-    ONNX export needs a clean tensor output for reliable conversion.
-    """
+class _FlatWrapper(nn.Module):
+    """Wraps HF classifier to return a plain logits tensor (no dict)."""
 
     def __init__(self, hf_model):
         super().__init__()
         self.model = hf_model
+        self.model.config.return_dict = False
 
     def forward(self, input_ids, attention_mask):
-        return self.model(input_ids=input_ids, attention_mask=attention_mask).logits
+        out = self.model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            return_dict=False,
+        )
+        return out[0]  # logits
 
 
 def export_tflite(tokenizer=None, calibration_texts=None, export_dir=None):
     """
-    Export model to TFLite .tflite (INT8 quantized).
+    Export model to TFLite .tflite via ai-edge-torch.
 
     Args:
-        tokenizer: HuggingFace tokenizer (or RemappedTokenizer) for calibration.
-                   If provided with calibration_texts, enables full INT8.
-        calibration_texts: List of text samples for representative dataset.
+        tokenizer: Unused (kept for API compatibility).
+        calibration_texts: Unused (kept for API compatibility).
         export_dir: Override export directory.
 
     Returns:
@@ -51,98 +52,52 @@ def export_tflite(tokenizer=None, calibration_texts=None, export_dir=None):
     """
     export_dir = export_dir or EXPORT_DIR
     best_dir = os.path.join(export_dir, 'best_pytorch')
-    onnx_path = os.path.join(export_dir, 'model.onnx')
-    saved_model_dir = os.path.join(export_dir, 'tf_saved_model')
 
     print("=" * 60)
     print("EXPORT: TFLite (Android)")
     print("=" * 60)
 
-    # -------------------------------------------------------
-    # Step 1: PyTorch → ONNX
-    # -------------------------------------------------------
+    # Lazy imports — heavy deps only needed at export time
+    import ai_edge_torch
     from transformers import AutoModelForSequenceClassification
 
-    print("  [1/3] PyTorch → ONNX...")
+    # Load saved PyTorch model and wrap
+    print("  Loading saved model...")
     hf_model = AutoModelForSequenceClassification.from_pretrained(best_dir)
-    wrapper = _LogitsWrapper(hf_model).eval().cpu().float()
+    wrapper = _FlatWrapper(hf_model).eval().cpu().float()
 
     dummy_ids = torch.randint(0, 100, (1, MAX_SEQ_LENGTH), dtype=torch.long)
     dummy_mask = torch.ones(1, MAX_SEQ_LENGTH, dtype=torch.long)
+    sample_inputs = (dummy_ids, dummy_mask)
 
-    with torch.no_grad():
-        torch.onnx.export(
-            wrapper,
-            (dummy_ids, dummy_mask),
-            onnx_path,
-            input_names=['input_ids', 'attention_mask'],
-            output_names=['logits'],
-            dynamic_axes=None,
-            opset_version=17,
-            do_constant_folding=True,
+    # Apply dynamic INT8 quantization (no calibration needed, ~4x smaller)
+    print("  Converting PyTorch → TFLite (dynamic INT8)...")
+    try:
+        from ai_edge_torch.quantize.pt2e_quantizer import (
+            PT2EQuantizer, get_symmetric_quantization_config,
         )
-    print(f"        Saved ONNX: {os.path.getsize(onnx_path) / 1e6:.1f}MB")
+        from ai_edge_torch.quantize.quant_config import QuantConfig
 
-    # -------------------------------------------------------
-    # Step 2: ONNX → TF SavedModel
-    # -------------------------------------------------------
-    print("  [2/3] ONNX → TF SavedModel...")
-    import onnx
-    from onnx_tf.backend import prepare
-
-    onnx_model = onnx.load(onnx_path)
-    tf_rep = prepare(onnx_model)
-    tf_rep.export_graph(saved_model_dir)
-    print(f"        Saved TF model to {saved_model_dir}")
-
-    # -------------------------------------------------------
-    # Step 3: TF SavedModel → TFLite (INT8)
-    # -------------------------------------------------------
-    print("  [3/3] TF SavedModel → TFLite (INT8)...")
-    import tensorflow as tf
-
-    representative_fn = None
-    if tokenizer is not None and calibration_texts is not None:
-        cal_samples = calibration_texts[:200]
-
-        def representative_fn():
-            for text in cal_samples:
-                enc = tokenizer(
-                    text, return_tensors='np',
-                    padding='max_length', truncation=True,
-                    max_length=MAX_SEQ_LENGTH,
-                )
-                yield [
-                    enc['input_ids'].astype(np.int32),
-                    enc['attention_mask'].astype(np.int32),
-                ]
-
-        print(f"        Calibration: {len(cal_samples)} samples for full INT8")
-    else:
-        print("        No calibration data — using dynamic range quantization")
-
-    converter = tf.lite.TFLiteConverter.from_saved_model(saved_model_dir)
-    converter.optimizations = [tf.lite.Optimize.DEFAULT]
-
-    if representative_fn is not None:
-        converter.representative_dataset = representative_fn
-        converter.target_spec.supported_ops = [tf.lite.OpsSet.TFLITE_BUILTINS_INT8]
-        converter.inference_input_type = tf.int32
-        converter.inference_output_type = tf.float32
-
-    tflite_model = converter.convert()
+        quantizer = PT2EQuantizer().set_global(
+            get_symmetric_quantization_config(
+                is_per_channel=True, is_dynamic=True,
+            )
+        )
+        edge_model = ai_edge_torch.convert(
+            wrapper, sample_inputs,
+            quant_config=QuantConfig(pt2e_quantizer=quantizer),
+        )
+        quant_label = 'dynamic INT8'
+    except Exception as e:
+        print(f"  Quantization failed ({type(e).__name__}: {e}), falling back to FP32")
+        edge_model = ai_edge_torch.convert(wrapper, sample_inputs)
+        quant_label = 'FP32'
 
     # Save
     tflite_path = os.path.join(export_dir, 'support_ai.tflite')
-    with open(tflite_path, 'wb') as f:
-        f.write(tflite_model)
+    edge_model.export(tflite_path)
 
     tflite_size = os.path.getsize(tflite_path) / 1e6
-    quant_type = 'full INT8' if representative_fn else 'INT8 dynamic range'
-    print(f"  TFLite: {tflite_size:.1f}MB ({quant_type})")
-
-    # Cleanup intermediate files
-    if os.path.exists(onnx_path):
-        os.remove(onnx_path)
+    print(f"  TFLite: {tflite_size:.1f}MB ({quant_label})")
 
     return tflite_path, tflite_size
