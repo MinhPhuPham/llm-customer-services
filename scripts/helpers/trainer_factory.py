@@ -58,13 +58,14 @@ def build_trainer(base_model, kept_ids, num_labels, train_ds, val_ds, tokenizer)
     classifier = AutoModelForSequenceClassification.from_pretrained(
         BASE_MODEL,
         num_labels=num_labels,
-        torch_dtype=DTYPE,
+        dtype=DTYPE,
     )
 
-    # Apply pruned embeddings
-    classifier.base_model.embeddings.word_embeddings = (
-        base_model.embeddings.word_embeddings
-    )
+    # Apply pruned embeddings (ModernBERT uses 'tok_embeddings', BERT uses 'word_embeddings')
+    if hasattr(base_model.embeddings, 'tok_embeddings'):
+        classifier.base_model.embeddings.tok_embeddings = base_model.embeddings.tok_embeddings
+    else:
+        classifier.base_model.embeddings.word_embeddings = base_model.embeddings.word_embeddings
     classifier.config.vocab_size = len(kept_ids)
     classifier.to(DEVICE)
 

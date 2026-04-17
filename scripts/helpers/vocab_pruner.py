@@ -45,7 +45,7 @@ def prune_vocabulary(tokenizer, texts, export_dir=None):
     print("=" * 60)
 
     # Load base model
-    base_model = AutoModel.from_pretrained(BASE_MODEL, torch_dtype=DTYPE)
+    base_model = AutoModel.from_pretrained(BASE_MODEL, dtype=DTYPE)
     original_vocab = tokenizer.vocab_size
     original_params = sum(p.numel() for p in base_model.parameters())
     print(f"  Original: {original_vocab:,} vocab, {original_params:,} params")
@@ -80,12 +80,20 @@ def prune_vocabulary(tokenizer, texts, export_dir=None):
     # -------------------------------------------------------
     # Rebuild embedding matrix
     # -------------------------------------------------------
-    old_emb = base_model.embeddings.word_embeddings.weight.data
+    # ModernBERT uses 'tok_embeddings', standard BERT uses 'word_embeddings'
+    if hasattr(base_model.embeddings, 'tok_embeddings'):
+        emb_layer = base_model.embeddings.tok_embeddings
+        emb_attr = 'tok_embeddings'
+    else:
+        emb_layer = base_model.embeddings.word_embeddings
+        emb_attr = 'word_embeddings'
+
+    old_emb = emb_layer.weight.data
     new_emb = torch.nn.Embedding(len(kept_ids), old_emb.shape[1])
     for new_id, old_id in enumerate(kept_ids):
         new_emb.weight.data[new_id] = old_emb[old_id]
 
-    base_model.embeddings.word_embeddings = new_emb
+    setattr(base_model.embeddings, emb_attr, new_emb)
     base_model.config.vocab_size = len(kept_ids)
 
     # -------------------------------------------------------
