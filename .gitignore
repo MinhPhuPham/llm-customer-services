@@ -9,3 +9,4 @@
 *.pb
 *.json
 *.csv
+.DS_Store

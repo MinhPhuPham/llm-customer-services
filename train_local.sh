@@ -51,8 +51,9 @@ do_setup() {
     header "Installing dependencies"
 
     # ── 1. PyTorch (CPU — local validation, GPU training on Colab) ──
-    echo "  [1/7] PyTorch (CPU)..."
-    pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu -q 2>&1 | tail -1
+    # Pin torch<2.8 for coremltools 9.0 compatibility (tested up to 2.7)
+    echo "  [1/7] PyTorch (CPU, <=2.7)..."
+    pip install "torch>=2.7,<2.8" --index-url https://download.pytorch.org/whl/cpu -q 2>&1 | tail -1
 
     # ── 2. Core ML deps (install first — they set numpy/protobuf baseline) ──
     echo "  [2/7] Transformers + training..."

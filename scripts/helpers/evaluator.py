@@ -37,18 +37,19 @@ class TFLiteEvaluator:
         self.inp_details = self.interpreter.get_input_details()
         self.out_details = self.interpreter.get_output_details()
 
-        # Map input names → indices (onnx2tf may reorder inputs)
-        self._input_index = {}
+        # Map input names → (index, dtype). onnx2tf may reorder inputs.
+        self._inputs = {}
         for detail in self.inp_details:
             name = detail['name'].lower()
+            dtype = detail['dtype']
             if 'input_id' in name:
-                self._input_index['input_ids'] = detail['index']
+                self._inputs['input_ids'] = (detail['index'], dtype)
             elif 'attention' in name or 'mask' in name:
-                self._input_index['attention_mask'] = detail['index']
+                self._inputs['attention_mask'] = (detail['index'], dtype)
         # Fallback: assume positional order if names don't match
-        if 'input_ids' not in self._input_index:
-            self._input_index['input_ids'] = self.inp_details[0]['index']
-            self._input_index['attention_mask'] = self.inp_details[1]['index']
+        if 'input_ids' not in self._inputs:
+            self._inputs['input_ids'] = (self.inp_details[0]['index'], self.inp_details[0]['dtype'])
+            self._inputs['attention_mask'] = (self.inp_details[1]['index'], self.inp_details[1]['dtype'])
 
     def predict(self, text, lang='en', threshold=None):
         """
@@ -73,14 +74,10 @@ class TFLiteEvaluator:
             max_length=MAX_SEQ_LENGTH,
         )
 
-        self.interpreter.set_tensor(
-            self._input_index['input_ids'],
-            enc['input_ids'].astype(np.int32),
-        )
-        self.interpreter.set_tensor(
-            self._input_index['attention_mask'],
-            enc['attention_mask'].astype(np.int32),
-        )
+        ids_idx, ids_dtype = self._inputs['input_ids']
+        mask_idx, mask_dtype = self._inputs['attention_mask']
+        self.interpreter.set_tensor(ids_idx, enc['input_ids'].astype(ids_dtype))
+        self.interpreter.set_tensor(mask_idx, enc['attention_mask'].astype(mask_dtype))
         self.interpreter.invoke()
 
         logits = self.interpreter.get_tensor(self.out_details[0]['index'])

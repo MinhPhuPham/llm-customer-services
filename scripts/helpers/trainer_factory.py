@@ -58,7 +58,7 @@ def build_trainer(base_model, kept_ids, num_labels, train_ds, val_ds, tokenizer)
     classifier = AutoModelForSequenceClassification.from_pretrained(
         BASE_MODEL,
         num_labels=num_labels,
-        torch_dtype=DTYPE,
+        dtype=DTYPE,
     )
 
     # Apply pruned embeddings (ModernBERT uses 'tok_embeddings', BERT uses 'word_embeddings')
@@ -118,6 +118,17 @@ def build_trainer(base_model, kept_ids, num_labels, train_ds, val_ds, tokenizer)
 
     print(f"  Epochs: {NUM_EPOCHS}, Batch: {BATCH_SIZE}, LR: {head_lr}")
     return trainer, classifier
+
+
+def save_best_model(trainer, tokenizer, export_dir=None):
+    """Save the trained model for export (CoreML + TFLite)."""
+    from scripts.config import EXPORT_DIR
+    export_dir = export_dir or EXPORT_DIR
+    best_dir = os.path.join(export_dir, 'best_pytorch')
+    trainer.save_model(best_dir)
+    tokenizer.save_pretrained(best_dir)
+    print(f"  Saved best model to {best_dir}")
+    return best_dir
 
 
 def run_training(trainer):

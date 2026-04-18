@@ -5,9 +5,10 @@
 Exports the trained PyTorch classifier to CoreML format
 for on-device iOS inference via Apple Neural Engine.
 
-Key trick: set `return_dict=False` on the HF model so it returns
-a plain tuple instead of SequenceClassifierOutput. This eliminates
-the `dictconstruct` op that coremltools can't convert.
+Uses torch.export (not torch.jit.trace) because ModernBERT's
+dynamic attention masking causes IndexError during JIT tracing.
+core_aten_decompositions ensures all ops decompose to primitives
+that coremltools can handle.
 """
 
 import os
@@ -26,56 +27,62 @@ class _FlatWrapper(nn.Module):
     def __init__(self, hf_model):
         super().__init__()
         self.model = hf_model
-        # Force tuple output — kills the SequenceClassifierOutput dict ops
-        self.model.config.return_dict = False
 
     def forward(self, input_ids, attention_mask):
         out = self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,
-            return_dict=False,
         )
-        return out[0]  # logits
+        return out.logits
 
 
-def export_coreml(trainer, tokenizer, export_dir=None):
+def export_coreml(trainer=None, tokenizer=None, export_dir=None):
     """
     Export model to CoreML .mlpackage (FP16).
 
-    Args:
-        trainer: HF Trainer with trained model.
-        tokenizer: HuggingFace tokenizer.
-        export_dir: Override export directory.
+    Loads the saved model from best_pytorch/ directory.
+    The trainer parameter is kept for backward compatibility but unused.
 
     Returns:
         coreml_path: Path to saved .mlpackage.
         coreml_size_mb: Size in MB.
     """
     export_dir = export_dir or EXPORT_DIR
+    best_dir = os.path.join(export_dir, 'best_pytorch')
 
     print("=" * 60)
     print("EXPORT: CoreML (iOS)")
     print("=" * 60)
 
-    # Save best PyTorch model first
-    best_dir = os.path.join(export_dir, 'best_pytorch')
-    trainer.save_model(best_dir)
-    tokenizer.save_pretrained(best_dir)
-    print(f"  Saved PyTorch model to {best_dir}")
+    from transformers import AutoModelForSequenceClassification
 
-    # Prepare wrapped model for tracing (float32 on CPU)
-    wrapper = _FlatWrapper(trainer.model).eval().cpu().float()
+    if not os.path.exists(best_dir):
+        raise FileNotFoundError(
+            f"Model not found at {best_dir}. "
+            "Run save_best_model (Step 8b) first."
+        )
+
+    print("  Loading saved model...")
+    hf_model = AutoModelForSequenceClassification.from_pretrained(best_dir)
+    wrapper = _FlatWrapper(hf_model).eval().cpu().float()
 
     dummy_ids = torch.randint(0, 100, (1, MAX_SEQ_LENGTH), dtype=torch.long)
     dummy_mask = torch.ones(1, MAX_SEQ_LENGTH, dtype=torch.long)
 
-    # TorchScript trace — no dict construction inside now
-    with torch.no_grad():
-        traced = torch.jit.trace(wrapper, (dummy_ids, dummy_mask), strict=False)
+    print("  [1/3] torch.export...")
+    exported = torch.export.export(
+        wrapper,
+        (dummy_ids, dummy_mask),
+        strict=False,
+    )
 
-    # Convert to CoreML
+    print("  [2/3] Decomposing to ATEN primitives...")
+    from torch._decomp import core_aten_decompositions
+    exported = exported.run_decompositions(core_aten_decompositions())
+
+    print("  [3/3] CoreML conversion (FP16 mlprogram)...")
     mlmodel = ct.convert(
-        traced,
+        exported,
         inputs=[
             ct.TensorType(
                 name='input_ids',

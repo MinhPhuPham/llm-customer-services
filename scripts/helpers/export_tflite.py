@@ -28,15 +28,13 @@ class _FlatWrapper(nn.Module):
     def __init__(self, hf_model):
         super().__init__()
         self.model = hf_model
-        self.model.config.return_dict = False
 
     def forward(self, input_ids, attention_mask):
         out = self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,
-            return_dict=False,
         )
-        return out[0]  # logits
+        return out.logits
 
 
 def _find_tflite(directory, prefer_fp16=True):
@@ -77,7 +75,7 @@ def export_tflite(tokenizer=None, calibration_texts=None, export_dir=None):
     if not os.path.exists(best_dir):
         raise FileNotFoundError(
             f"Model not found at {best_dir}. "
-            "Run CoreML export (Step 9) first — it saves the trained model."
+            "Run save_best_model (Step 8b) first."
         )
 
     print("  Loading saved model...")
@@ -106,6 +104,7 @@ def export_tflite(tokenizer=None, calibration_texts=None, export_dir=None):
                     'logits': {0: 'batch'},
                 },
                 opset_version=18,
+                dynamo=True,
             )
 
         # Step 2: ONNX → TFLite via onnx2tf
@@ -137,7 +136,7 @@ def export_tflite(tokenizer=None, calibration_texts=None, export_dir=None):
                 print(f"  INT8 failed ({type(e).__name__}: {e})")
 
         if tflite_model is None:
-            gen_tflite = _find_tflite(out_dir, prefer_fp16=True)
+            gen_tflite = _find_tflite(out_dir, prefer_fp16=False)
             if gen_tflite is None:
                 raise FileNotFoundError(
                     f"No .tflite file found in {out_dir}. "
