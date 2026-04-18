@@ -5,10 +5,8 @@
 Exports the trained PyTorch classifier to CoreML format
 for on-device iOS inference via Apple Neural Engine.
 
-Uses torch.export (not torch.jit.trace) because ModernBERT's
-dynamic attention masking causes IndexError during JIT tracing.
-core_aten_decompositions ensures all ops decompose to primitives
-that coremltools can handle.
+Uses torch.export + core_aten_decompositions to ensure all ops
+decompose to primitives that coremltools can handle.
 """
 
 import os

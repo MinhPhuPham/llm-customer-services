@@ -61,7 +61,7 @@ def build_trainer(base_model, kept_ids, num_labels, train_ds, val_ds, tokenizer)
         dtype=DTYPE,
     )
 
-    # Apply pruned embeddings (ModernBERT uses 'tok_embeddings', BERT uses 'word_embeddings')
+    # Apply pruned embeddings
     if hasattr(base_model.embeddings, 'tok_embeddings'):
         classifier.base_model.embeddings.tok_embeddings = base_model.embeddings.tok_embeddings
     else:
@@ -69,8 +69,7 @@ def build_trainer(base_model, kept_ids, num_labels, train_ds, val_ds, tokenizer)
     classifier.config.vocab_size = len(kept_ids)
 
     # Freeze pretrained layers — only train the classifier head.
-    # mmBERT already understands EN+JA; with few samples (<500),
-    # fine-tuning all 42M params causes severe overfitting.
+    # With few samples (<500), fine-tuning all params causes overfitting.
     for param in classifier.base_model.parameters():
         param.requires_grad = False
 

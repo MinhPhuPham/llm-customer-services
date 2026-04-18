@@ -20,15 +20,17 @@ CONTINUE_TRAINING = False
 # ===========================================================
 # BASE MODEL
 # ===========================================================
-# mmBERT-small recommended (ModernBERT arch, 2025)
-# Fallback: 'xlm-roberta-base'
-BASE_MODEL = 'jhu-clsp/mmbert-small'
+# multilingual-e5-small: XLM-R architecture (12L/384H), 117M params.
+# Contrastive pretraining (2024) gives strong EN+JP embeddings.
+# Standard BERT ops → clean TFLite/CoreML export.
+BASE_MODEL = 'intfloat/multilingual-e5-small'
 
 
 # ===========================================================
 # LANGUAGE PREFIXES
 # ===========================================================
-LANG_PREFIX = {'en': '[EN]', 'ja': '[JA]'}
+# E5 models require 'query: ' prefix for input texts.
+LANG_PREFIX = {'en': 'query: [EN]', 'ja': 'query: [JA]'}
 
 
 # ===========================================================

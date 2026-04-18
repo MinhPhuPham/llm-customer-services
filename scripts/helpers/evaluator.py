@@ -105,9 +105,14 @@ class TFLiteEvaluator:
         """
         correct = 0
         for text, label in zip(val_texts, val_labels):
-            # Strip prefix for predict()
-            clean = text.replace('[EN] ', '').replace('[JA] ', '')
-            lang = 'en' if text.startswith('[EN]') else 'ja'
+            # Strip prefix for predict() — handles both
+            # "query: [EN] text" (E5) and "[EN] text" (legacy) formats
+            lang = 'en' if '[EN]' in text else 'ja'
+            clean = text
+            for pfx in ('query: [EN] ', 'query: [JA] ', '[EN] ', '[JA] '):
+                if clean.startswith(pfx):
+                    clean = clean[len(pfx):]
+                    break
             pred_intent, _ = self.predict(clean, lang=lang, threshold=0.0)
 
             if label_encoder.classes_[label] == pred_intent:

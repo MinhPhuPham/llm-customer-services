@@ -131,13 +131,13 @@ class TestDataPipeline:
     def test_dp02_language_prefixes(self, parsed_data):
         train_rows, _ = parsed_data
         for text, _ in train_rows:
-            assert text.startswith(('[EN] ', '[JA] ')), \
-                f'Missing prefix: "{text[:50]}"'
+            assert '[EN]' in text or '[JA]' in text, \
+                f'Missing language tag: "{text[:50]}"'
 
     def test_dp03_bilingual_coverage(self, parsed_data):
         train_rows, _ = parsed_data
-        en = sum(1 for t, _ in train_rows if t.startswith('[EN]'))
-        ja = sum(1 for t, _ in train_rows if t.startswith('[JA]'))
+        en = sum(1 for t, _ in train_rows if '[EN]' in t)
+        ja = sum(1 for t, _ in train_rows if '[JA]' in t)
         assert en > 0, 'No English samples'
         assert ja > 0, 'No Japanese samples'
 

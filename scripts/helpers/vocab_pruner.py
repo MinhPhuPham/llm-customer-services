@@ -3,7 +3,7 @@
 # ===========================================================
 """
 Strips unused language tokens from the embedding matrix.
-Reduces vocab from ~256K → ~35K (EN + JP only).
+Reduces vocab from ~250K → EN + JP tokens only.
 Saves token ID mapping for tokenizer reconstruction.
 """
 
