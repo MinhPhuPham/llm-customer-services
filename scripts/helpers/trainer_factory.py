@@ -68,10 +68,16 @@ def build_trainer(base_model, kept_ids, num_labels, train_ds, val_ds, tokenizer)
         classifier.base_model.embeddings.word_embeddings = base_model.embeddings.word_embeddings
     classifier.config.vocab_size = len(kept_ids)
 
-    # Freeze pretrained layers — only train the classifier head.
+    # Freeze pretrained transformer layers.
     # With few samples (<500), fine-tuning all params causes overfitting.
     for param in classifier.base_model.parameters():
         param.requires_grad = False
+
+    # Unfreeze pooler — E5/sentence-transformer models use mean pooling
+    # during pretraining, so the CLS pooler needs to adapt for classification.
+    if hasattr(classifier.base_model, 'pooler') and classifier.base_model.pooler is not None:
+        for param in classifier.base_model.pooler.parameters():
+            param.requires_grad = True
 
     classifier.to(DEVICE)
 
@@ -79,7 +85,7 @@ def build_trainer(base_model, kept_ids, num_labels, train_ds, val_ds, tokenizer)
     trainable_params = sum(p.numel() for p in classifier.parameters() if p.requires_grad)
     frozen_params = total_params - trainable_params
     print(f"  Total: {total_params:,} params, {num_labels} intents")
-    print(f"  Trainable: {trainable_params:,} (classifier head)")
+    print(f"  Trainable: {trainable_params:,} (pooler + classifier head)")
     print(f"  Frozen: {frozen_params:,} (pretrained base)")
 
     # Training arguments — higher LR for head-only training
