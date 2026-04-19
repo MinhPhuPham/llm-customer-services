@@ -11,10 +11,12 @@
 #   ./test/run_tests.sh conversation   # Conversation flow tests (needs model)
 #   ./test/run_tests.sh greeting       # Greeting-related tests
 #   ./test/run_tests.sh quick          # Data + tokenization (no model needed)
+#   ./test/run_tests.sh chat           # Interactive chat (test model like a user)
+#   ./test/run_tests.sh chat ja        # Interactive chat in Japanese
 #
 # Prerequisites:
 #   pip install pytest transformers datasets scikit-learn openpyxl numpy
-#   For inference/conversation tests: trained + exported TFLite model
+#   For inference/conversation/chat: trained + exported TFLite model
 # ===========================================================
 
 set -euo pipefail
@@ -29,11 +31,27 @@ GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 NC='\033[0m'
 
-echo "============================================================"
-echo "  Bilingual Support AI — Test Suite"
-echo "============================================================"
-echo "  Project: $PROJECT_ROOT"
-echo ""
+# Use venv if it exists
+if [ -d "$PROJECT_ROOT/.venv" ]; then
+    # shellcheck disable=SC1091
+    source "$PROJECT_ROOT/.venv/bin/activate"
+fi
+
+FILTER="${1:-all}"
+
+case "$FILTER" in
+    chat)
+        LANG="${2:-en}"
+        exec python test/chat.py --lang "$LANG"
+        ;;
+    *)
+        echo "============================================================"
+        echo "  Bilingual Support AI — Test Suite"
+        echo "============================================================"
+        echo "  Project: $PROJECT_ROOT"
+        echo ""
+        ;;
+esac
 
 if ! python -c "import pytest" 2>/dev/null; then
     echo -e "${RED}ERROR: pytest not installed. Run: pip install pytest${NC}"
@@ -47,8 +65,6 @@ if [ ! -f "$EXCEL_FILE" ]; then
     echo "  Data pipeline tests will be skipped."
     echo ""
 fi
-
-FILTER="${1:-all}"
 
 case "$FILTER" in
     data)
@@ -81,7 +97,17 @@ case "$FILTER" in
         ;;
     *)
         echo "Unknown filter: $FILTER"
-        echo "Usage: $0 [data|tokenize|inference|conversation|greeting|quick|all]"
+        echo ""
+        echo "Usage: $0 [data|tokenize|inference|conversation|greeting|quick|chat|all]"
+        echo ""
+        echo "  chat [en|ja]   Interactive chat — test model like a real user"
+        echo "  data           Data pipeline tests (no model needed)"
+        echo "  tokenize       Tokenization tests"
+        echo "  inference      Inference tests (needs exported model)"
+        echo "  conversation   Conversation flow tests (needs exported model)"
+        echo "  greeting       Greeting-related tests"
+        echo "  quick          Data + tokenization (no model needed)"
+        echo "  all            All tests"
         exit 1
         ;;
 esac
