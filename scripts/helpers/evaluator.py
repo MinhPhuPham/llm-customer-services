@@ -18,15 +18,17 @@ from scripts.config import MAX_SEQ_LENGTH, LANG_PREFIX, CONFIDENCE_THRESHOLD
 class TFLiteEvaluator:
     """Evaluates a TFLite model with bilingual test cases."""
 
-    def __init__(self, tflite_path, tokenizer, label_map):
+    def __init__(self, tflite_path, tokenizer, label_map, responses=None):
         """
         Args:
             tflite_path: Path to .tflite model file.
             tokenizer: HuggingFace tokenizer.
-            label_map: Dict[int, str] mapping label ID → intent name.
+            label_map: Dict[int, str] mapping label ID → tag name.
+            responses: Optional dict from responses.json (tag → {en, ja, type}).
         """
         self.tokenizer = tokenizer
         self.label_map = label_map
+        self._responses = responses or {}
 
         # Lazy import — tensorflow only loaded when evaluator is used
         import tensorflow as tf
@@ -61,7 +63,7 @@ class TFLiteEvaluator:
             threshold: Confidence threshold (default: config value).
 
         Returns:
-            (intent, confidence): Predicted intent and confidence score.
+            (tag, confidence): Predicted tag and confidence score.
         """
         threshold = threshold if threshold is not None else CONFIDENCE_THRESHOLD
 
@@ -85,11 +87,31 @@ class TFLiteEvaluator:
         probs = np.exp(logits_stable) / np.exp(logits_stable).sum(axis=-1, keepdims=True)
         pred_id = np.argmax(probs, axis=-1)[0]
         confidence = probs[0][pred_id]
-        intent = self.label_map[int(pred_id)]
+        tag = self.label_map[int(pred_id)]
 
         if confidence < threshold:
-            return 'out_of_scope', confidence
-        return intent, confidence
+            return 'unknown', confidence
+        return tag, confidence
+
+    def get_response(self, text, lang='en', threshold=None):
+        """
+        Classify text and return full response dict for the mobile app.
+
+        Args:
+            text: Raw query text (without language prefix).
+            lang: 'en' or 'ja'.
+            threshold: Confidence threshold (default: config value).
+
+        Returns:
+            dict: {type, tag, response_text}
+        """
+        tag, confidence = self.predict(text, lang=lang, threshold=threshold)
+        resp = self._responses.get(tag, {})
+        return {
+            'type': resp.get('type', 'reject'),
+            'tag': tag,
+            'response_text': resp.get(lang, ''),
+        }
 
     def run_validation(self, val_texts, val_labels, label_encoder):
         """
@@ -113,9 +135,9 @@ class TFLiteEvaluator:
                 if clean.startswith(pfx):
                     clean = clean[len(pfx):]
                     break
-            pred_intent, _ = self.predict(clean, lang=lang, threshold=0.0)
+            pred_tag, _ = self.predict(clean, lang=lang, threshold=0.0)
 
-            if label_encoder.classes_[label] == pred_intent:
+            if label_encoder.classes_[label] == pred_tag:
                 correct += 1
 
         accuracy = correct / len(val_texts) * 100
@@ -123,7 +145,7 @@ class TFLiteEvaluator:
 
 
 def evaluate_model(tflite_path, tokenizer, label_map, label_encoder,
-                   val_texts, val_labels):
+                   val_texts, val_labels, responses=None):
     """
     Full evaluation: validation accuracy + bilingual tests + latency.
 
@@ -134,6 +156,7 @@ def evaluate_model(tflite_path, tokenizer, label_map, label_encoder,
         label_encoder: Fitted LabelEncoder.
         val_texts: Validation texts.
         val_labels: Validation labels.
+        responses: Optional dict from responses.json.
 
     Returns:
         results: Dict with accuracy, test results, and latency.
@@ -142,7 +165,7 @@ def evaluate_model(tflite_path, tokenizer, label_map, label_encoder,
     print("EVALUATION")
     print("=" * 60)
 
-    evaluator = TFLiteEvaluator(tflite_path, tokenizer, label_map)
+    evaluator = TFLiteEvaluator(tflite_path, tokenizer, label_map, responses)
 
     # -------------------------------------------------------
     # Validation accuracy
@@ -154,43 +177,43 @@ def evaluate_model(tflite_path, tokenizer, label_map, label_encoder,
     # English tests
     # -------------------------------------------------------
     en_tests = [
-        ("How do I reset my password?", "account_password"),
-        ("Cancel my subscription", "subscription_cancel"),
-        ("The app keeps crashing", "bug_report"),
-        ("What's the weather?", "out_of_scope"),
-        ("I need to talk to someone", "need_human"),
+        ("How do I reset my password?", "password"),
+        ("Cancel my subscription", "subscription"),
+        ("The app keeps crashing", "bug"),
+        ("What's the weather?", "unknown"),
+        ("I need to talk to someone", "support"),
     ]
 
     en_header = 'English Tests (lang="en")'
     print(f"\n  {en_header:=^50}")
     en_results = []
     for text, expected in en_tests:
-        intent, conf = evaluator.predict(text, lang='en')
-        passed = intent == expected
+        tag, conf = evaluator.predict(text, lang='en')
+        passed = tag == expected
         status = 'PASS' if passed else 'FAIL'
-        print(f"    [{status}] \"{text}\" → {intent} ({conf:.2f})")
-        en_results.append((text, expected, intent, conf, passed))
+        print(f"    [{status}] \"{text}\" → {tag} ({conf:.2f})")
+        en_results.append((text, expected, tag, conf, passed))
 
     # -------------------------------------------------------
     # Japanese tests
     # -------------------------------------------------------
     ja_tests = [
-        ("パスワードを変更したい", "account_password"),
-        ("解約したい", "subscription_cancel"),
-        ("アプリがフリーズする", "bug_report"),
-        ("今日の天気は？", "out_of_scope"),
-        ("サポートに連絡したい", "need_human"),
+        ("パスワードを変更したい", "password"),
+        ("解約したい", "subscription"),
+        ("アプリがフリーズする", "bug"),
+        ("今日の天気は？", "unknown"),
+        ("サポートに連絡したい", "support"),
     ]
 
     ja_header = 'Japanese Tests (lang="ja")'
     print(f"\n  {ja_header:=^50}")
     ja_results = []
     for text, expected in ja_tests:
-        intent, conf = evaluator.predict(text, lang='ja')
-        passed = intent == expected
+        tag, conf = evaluator.predict(text, lang='ja')
+        passed = tag == expected
         status = 'PASS' if passed else 'FAIL'
-        print(f"    [{status}] \"{text}\" → {intent} ({conf:.2f})")
-        ja_results.append((text, expected, intent, conf, passed))
+        print(f"    [{status}] \"{text}\" → {tag} ({conf:.2f})")
+        ja_results.append((text, expected, tag, conf, passed))
 
     # -------------------------------------------------------
     # Latency

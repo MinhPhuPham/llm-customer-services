@@ -99,7 +99,7 @@ def export_coreml(trainer=None, tokenizer=None, export_dir=None):
         minimum_deployment_target=ct.target.iOS17,
     )
     mlmodel.author = 'SupportAI'
-    mlmodel.short_description = 'Bilingual EN/JP intent classifier'
+    mlmodel.short_description = 'Bilingual EN/JP tag classifier'
     mlmodel.version = '1.0'
 
     # Save

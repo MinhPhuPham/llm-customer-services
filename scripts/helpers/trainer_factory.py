@@ -41,7 +41,7 @@ def build_trainer(base_model, kept_ids, num_labels, train_ds, val_ds, tokenizer)
     Args:
         base_model: Model with pruned embeddings.
         kept_ids: List of kept token IDs (for vocab size).
-        num_labels: Number of intent classes.
+        num_labels: Number of tag classes.
         train_ds: Tokenized training HF Dataset.
         val_ds: Tokenized validation HF Dataset.
         tokenizer: HuggingFace tokenizer.
@@ -84,7 +84,7 @@ def build_trainer(base_model, kept_ids, num_labels, train_ds, val_ds, tokenizer)
     total_params = sum(p.numel() for p in classifier.parameters())
     trainable_params = sum(p.numel() for p in classifier.parameters() if p.requires_grad)
     frozen_params = total_params - trainable_params
-    print(f"  Total: {total_params:,} params, {num_labels} intents")
+    print(f"  Total: {total_params:,} params, {num_labels} tags")
     print(f"  Trainable: {trainable_params:,} (pooler + classifier head)")
     print(f"  Frozen: {frozen_params:,} (pretrained base)")
 

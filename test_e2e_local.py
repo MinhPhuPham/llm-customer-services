@@ -45,7 +45,7 @@ def main():
 
     label_map = export_label_map(label_encoder)
     responses = export_responses(df)
-    print(f"  {len(train_rows)} rows, {num_labels} intents")
+    print(f"  {len(train_rows)} rows, {num_labels} tags")
 
     # ── Step 6: Vocab pruning + tokenization ──
     print("\n=== STEP 6: Vocab Pruning ===")

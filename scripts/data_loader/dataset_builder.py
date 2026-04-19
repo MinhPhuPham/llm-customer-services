@@ -2,7 +2,7 @@
 # dataset_builder.py — Label encoding + split + tokenization
 # ===========================================================
 """
-Takes raw (text, intent) pairs and produces:
+Takes raw (text, tag) pairs and produces:
   - Encoded labels via LabelEncoder
   - Train/val splits (before pruning)
   - Tokenized HF Datasets (after pruning, with remapped tokenizer)
@@ -30,7 +30,7 @@ def prepare_splits(train_rows, test_size=0.15, random_state=42):
     for token collection.  Tokenize AFTER pruning with tokenize_datasets().
 
     Args:
-        train_rows: List of (prefixed_text, intent) tuples.
+        train_rows: List of (prefixed_text, tag) tuples.
         test_size: Fraction for validation split.
         random_state: Random seed for reproducibility.
 
@@ -41,7 +41,7 @@ def prepare_splits(train_rows, test_size=0.15, random_state=42):
         train_labels: Training encoded labels (numpy array).
         val_labels: Validation encoded labels (numpy array).
         label_encoder: Fitted LabelEncoder.
-        num_labels: Number of unique intents.
+        num_labels: Number of unique tags.
     """
     texts = [r[0] for r in train_rows]
     labels = [r[1] for r in train_rows]
@@ -51,7 +51,7 @@ def prepare_splits(train_rows, test_size=0.15, random_state=42):
     encoded_labels = label_encoder.fit_transform(labels)
     num_labels = len(label_encoder.classes_)
 
-    print(f"  Intents: {num_labels} — {list(label_encoder.classes_)}")
+    print(f"  Tags: {num_labels} — {list(label_encoder.classes_)}")
 
     # Train / val split
     train_texts, val_texts, train_labels, val_labels = train_test_split(

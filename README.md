@@ -1,18 +1,18 @@
 # On-Device Bilingual Customer Support AI
 
-Intent classification (EN/JP) → train on Colab A100 → export CoreML (iOS) + TFLite (Android).
+Tag classification (EN/JP) → train on Colab A100 → export CoreML (iOS) + TFLite (Android).
 
 ```
-[EN]/[JA] + query → mmBERT-small (pruned EN+JP) → Intent → Answer Template
-                                                    ↓        ↓        ↓
-                                                  ≥0.85    <0.85   support
-                                                 template  decline    form
+[EN]/[JA] + query → multilingual-e5-small (pruned EN+JP) → Tag → {type, tag, response_text}
+                                                             ↓        ↓        ↓
+                                                           ≥0.85    <0.85   support
+                                                          template  decline    form
 ```
 
 | Spec | Value |
 |------|-------|
-| Model | mmBERT-small, 140M params, vocab pruned 256K→~35K |
-| Training | 10 epochs, batch 2048, sqrt-scaled LR (1.6e-4), cosine schedule |
+| Model | intfloat/multilingual-e5-small, 117M params, vocab pruned 250K→~330 |
+| Training | 30 epochs, head-only (pooler + classifier), cosine schedule |
 | iOS | CoreML FP16 (.mlpackage) — Apple Neural Engine |
 | Android | TFLite INT8 (.tflite) — NNAPI/GPU delegate |
 | On-device | ~50MB total, ~30-40MB RAM |
@@ -65,13 +65,29 @@ python -m scripts.run_pipeline --google-sheet "https://docs.google.com/spreadshe
 
 Excel or Google Sheets with this layout:
 
-| intent | type | Question EN | Question JA | Answer EN | Answer JA |
-|--------|------|-------------|-------------|-----------|-----------|
-| account_password | answer | How to reset? | パスワードをリセットしたい | To reset: Settings > ... | リセット：設定 > ... |
-| account_password | answer | forgot password | パスワードを忘れました | *(inherits above)* | |
+| tag | type | Question EN | Question JA | Answer EN | Answer JA |
+|-----|------|-------------|-------------|-----------|-----------|
+| password | answer | How to reset? | パスワードをリセットしたい | To reset: Settings > ... | リセット：設定 > ... |
+| password | answer | forgot password | パスワードを忘れました | *(inherits above)* | |
 
 - `type`: `answer` = direct reply, `support` = show form, `reject` = out of scope
-- Answers filled only on first row per intent, rest auto-inherited
+- Answers filled only on first row per tag, rest auto-inherited
+
+**Tags:** password, subscription, billing, howto, bug, support, unknown, greeting
+
+---
+
+## Response Format
+
+The model classifies user input and returns:
+
+```json
+{
+  "type": "answer",
+  "tag": "password",
+  "response_text": "To reset your password: 1. Go to Settings..."
+}
+```
 
 ---
 
@@ -82,5 +98,5 @@ Excel or Google Sheets with this layout:
 | `SupportAI.mlpackage` | iOS (Xcode, On-Demand Resources) |
 | `support_ai.tflite` | Android (Play Asset Delivery) |
 | `support_ai.tflite.zst` | OTA delivery via CDN |
-| `label_map.json` | Both — intent_id → intent_name |
-| `responses.json` | Both — intent → {en, ja, type} |
+| `label_map.json` | Both — tag_id → tag_name |
+| `responses.json` | Both — tag → {en, ja, type} |

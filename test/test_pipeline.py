@@ -124,9 +124,9 @@ class TestDataPipeline:
     def test_dp01_parse_produces_train_rows(self, parsed_data):
         train_rows, _ = parsed_data
         assert len(train_rows) >= 2
-        for text, intent in train_rows:
+        for text, tag in train_rows:
             assert isinstance(text, str) and len(text) > 0
-            assert isinstance(intent, str) and len(intent) > 0
+            assert isinstance(tag, str) and len(tag) > 0
 
     def test_dp02_language_prefixes(self, parsed_data):
         train_rows, _ = parsed_data
@@ -163,36 +163,36 @@ class TestDataPipeline:
     def test_dp07_responses_json(self, export_artifacts):
         _, _, _, rj = export_artifacts
         valid_types = {'answer', 'support', 'reject'}
-        for intent, resp in rj.items():
-            assert 'en' in resp, f'{intent} missing "en"'
-            assert 'ja' in resp, f'{intent} missing "ja"'
-            assert 'type' in resp, f'{intent} missing "type"'
+        for tag, resp in rj.items():
+            assert 'en' in resp, f'{tag} missing "en"'
+            assert 'ja' in resp, f'{tag} missing "ja"'
+            assert 'type' in resp, f'{tag} missing "type"'
             assert resp['type'] in valid_types
 
-    def test_dp08_all_intents_have_responses(self, export_artifacts):
+    def test_dp08_all_tags_have_responses(self, export_artifacts):
         _, _, lm, rj = export_artifacts
-        for iid, name in lm.items():
-            assert name in rj, f'Intent "{name}" (id={iid}) not in responses.json'
+        for tid, name in lm.items():
+            assert name in rj, f'Tag "{name}" (id={tid}) not in responses.json'
 
     def test_dp09_answer_types_have_content(self, export_artifacts):
         _, _, _, rj = export_artifacts
-        for intent, resp in rj.items():
+        for tag, resp in rj.items():
             if resp['type'] == 'answer':
-                assert resp['en'].strip(), f'{intent}: EN answer empty'
-                assert resp['ja'].strip(), f'{intent}: JA answer empty'
+                assert resp['en'].strip(), f'{tag}: EN answer empty'
+                assert resp['ja'].strip(), f'{tag}: JA answer empty'
 
-    def test_dp10_greeting_intent_exists(self, parsed_data):
-        """Training data must include a greeting intent for conversation flow."""
+    def test_dp10_greeting_tag_exists(self, parsed_data):
+        """Training data must include a greeting tag for conversation flow."""
         train_rows, _ = parsed_data
-        intents = {intent for _, intent in train_rows}
-        assert 'greeting' in intents, (
-            'Missing "greeting" intent in training data. '
-            'Add rows like: intent=greeting, q_en="hi", q_en="hello", '
+        tags = {tag for _, tag in train_rows}
+        assert 'greeting' in tags, (
+            'Missing "greeting" tag in training data. '
+            'Add rows like: tag=greeting, q_en="hi", q_en="hello", '
             'a_en="Hello! I\'m the support bot..."'
         )
 
     def test_dp11_greeting_has_response(self, export_artifacts):
-        """greeting intent must have a welcome message in responses.json."""
+        """greeting tag must have a welcome message in responses.json."""
         _, _, _, rj = export_artifacts
         assert 'greeting' in rj, 'greeting not in responses.json'
         g = rj['greeting']
@@ -261,16 +261,16 @@ class TestInference:
         TEST_CASES['inference']['english'],
         ids=[c['id'] for c in TEST_CASES['inference']['english']],
     )
-    def test_english_intent(self, tflite_evaluator, case):
-        intent, conf = tflite_evaluator.predict(
+    def test_english_tag(self, tflite_evaluator, case):
+        tag, conf = tflite_evaluator.predict(
             case['text'], lang=case['lang'], threshold=0.0,
         )
-        if case['expected_intent'] == 'out_of_scope':
+        if case['expected_tag'] == 'unknown':
             assert conf < 0.85, \
-                f'{case["id"]}: out_of_scope should have low confidence, got {conf:.2f}'
+                f'{case["id"]}: unknown should have low confidence, got {conf:.2f}'
         else:
-            assert intent == case['expected_intent'], \
-                f'{case["id"]}: expected {case["expected_intent"]}, got {intent} ({conf:.2f})'
+            assert tag == case['expected_tag'], \
+                f'{case["id"]}: expected {case["expected_tag"]}, got {tag} ({conf:.2f})'
             assert conf >= case['min_confidence'], \
                 f'{case["id"]}: confidence {conf:.2f} < {case["min_confidence"]}'
 
@@ -279,30 +279,30 @@ class TestInference:
         TEST_CASES['inference']['japanese'],
         ids=[c['id'] for c in TEST_CASES['inference']['japanese']],
     )
-    def test_japanese_intent(self, tflite_evaluator, case):
-        intent, conf = tflite_evaluator.predict(
+    def test_japanese_tag(self, tflite_evaluator, case):
+        tag, conf = tflite_evaluator.predict(
             case['text'], lang=case['lang'], threshold=0.0,
         )
-        if case['expected_intent'] == 'out_of_scope':
+        if case['expected_tag'] == 'unknown':
             assert conf < 0.85, \
-                f'{case["id"]}: out_of_scope should have low confidence, got {conf:.2f}'
+                f'{case["id"]}: unknown should have low confidence, got {conf:.2f}'
         else:
-            assert intent == case['expected_intent'], \
-                f'{case["id"]}: expected {case["expected_intent"]}, got {intent} ({conf:.2f})'
+            assert tag == case['expected_tag'], \
+                f'{case["id"]}: expected {case["expected_tag"]}, got {tag} ({conf:.2f})'
             assert conf >= case['min_confidence'], \
                 f'{case["id"]}: confidence {conf:.2f} < {case["min_confidence"]}'
 
     def test_confidence_threshold_rejects(self, tflite_evaluator):
-        intent, _ = tflite_evaluator.predict(
+        tag, _ = tflite_evaluator.predict(
             "What's the weather?", lang='en', threshold=0.85,
         )
-        assert intent == 'out_of_scope'
+        assert tag == 'unknown'
 
     def test_confidence_threshold_accepts(self, tflite_evaluator):
-        intent, conf = tflite_evaluator.predict(
+        tag, conf = tflite_evaluator.predict(
             'How do I reset my password?', lang='en', threshold=0.85,
         )
-        assert intent != 'out_of_scope', f'Expected real intent, got out_of_scope ({conf:.2f})'
+        assert tag != 'unknown', f'Expected real tag, got unknown ({conf:.2f})'
 
     def test_latency_reasonable(self, tflite_evaluator):
         import time
@@ -314,13 +314,20 @@ class TestInference:
         median_ms = np.median(times)
         assert median_ms < 100, f'Median latency {median_ms:.1f}ms > 100ms'
 
+    def test_get_response_format(self, tflite_evaluator):
+        """get_response() should return {type, tag, response_text} dict."""
+        resp = tflite_evaluator.get_response('How do I reset my password?', lang='en')
+        assert 'type' in resp
+        assert 'tag' in resp
+        assert 'response_text' in resp
+
 
 # =================================================================
 # 4. CONVERSATION FLOW TESTS (require exported TFLite model)
 #
 # The model is STATELESS — each message is classified independently.
 # Multi-turn conversation is managed by the mobile app, not the model.
-# These tests verify that each turn produces the correct intent
+# These tests verify that each turn produces the correct tag
 # so the app can look up the right response from responses.json.
 #
 # Example flow:
@@ -330,8 +337,8 @@ class TestInference:
 #       "Hello! I'm the automatic support bot for PROJECT_NAME..."
 #
 #   User: "i need to change password"
-#     → model predicts: account_password
-#     → app shows: responses.json["account_password"]["en"]
+#     → model predicts: password
+#     → app shows: responses.json["password"]["en"]
 #       "Yes, I can help you! To change your password: 1. Go to..."
 # =================================================================
 
@@ -344,26 +351,26 @@ class TestConversationFlow:
         ids=[s['id'] for s in TEST_CASES['conversation_flow']['scenarios']],
     )
     def test_conversation_scenario(self, tflite_evaluator, export_artifacts, scenario):
-        """Each turn in the conversation should classify to the correct intent."""
+        """Each turn in the conversation should classify to the correct tag."""
         _, responses, _, _ = export_artifacts
 
         for i, turn in enumerate(scenario['turns']):
-            intent, conf = tflite_evaluator.predict(
+            tag, conf = tflite_evaluator.predict(
                 turn['user'], lang=turn['lang'], threshold=0.0,
             )
 
             step = f'{scenario["id"]} turn {i+1}'
 
-            if turn['expected_intent'] == 'out_of_scope':
+            if turn['expected_tag'] == 'unknown':
                 assert conf < 0.85, \
-                    f'{step}: expected out_of_scope (low conf), got {intent} ({conf:.2f})'
+                    f'{step}: expected unknown (low conf), got {tag} ({conf:.2f})'
             else:
-                assert intent == turn['expected_intent'], \
-                    f'{step}: "{turn["user"]}" → expected {turn["expected_intent"]}, got {intent} ({conf:.2f})'
+                assert tag == turn['expected_tag'], \
+                    f'{step}: "{turn["user"]}" → expected {turn["expected_tag"]}, got {tag} ({conf:.2f})'
 
             # Verify the response exists and matches expected type
-            if turn['expected_intent'] in responses:
-                resp = responses[turn['expected_intent']]
+            if turn['expected_tag'] in responses:
+                resp = responses[turn['expected_tag']]
                 if 'expected_response_type' in turn:
                     assert resp['type'] == turn['expected_response_type'], \
                         f'{step}: response type should be {turn["expected_response_type"]}, got {resp["type"]}'
@@ -371,7 +378,7 @@ class TestConversationFlow:
                 if resp['type'] == 'answer':
                     lang_key = turn['lang']
                     assert resp[lang_key].strip(), \
-                        f'{step}: {lang_key} response empty for {turn["expected_intent"]}'
+                        f'{step}: {lang_key} response empty for {turn["expected_tag"]}'
 
     @pytest.mark.parametrize(
         'greeting',
@@ -381,10 +388,10 @@ class TestConversationFlow:
         )],
     )
     def test_english_greeting_variants(self, tflite_evaluator, greeting):
-        """All common EN greetings should classify as greeting intent."""
-        intent, conf = tflite_evaluator.predict(greeting, lang='en', threshold=0.0)
-        assert intent == 'greeting', \
-            f'"{greeting}" → expected greeting, got {intent} ({conf:.2f})'
+        """All common EN greetings should classify as greeting tag."""
+        tag, conf = tflite_evaluator.predict(greeting, lang='en', threshold=0.0)
+        assert tag == 'greeting', \
+            f'"{greeting}" → expected greeting, got {tag} ({conf:.2f})'
 
     @pytest.mark.parametrize(
         'greeting',
@@ -394,16 +401,16 @@ class TestConversationFlow:
         )],
     )
     def test_japanese_greeting_variants(self, tflite_evaluator, greeting):
-        """All common JA greetings should classify as greeting intent."""
-        intent, conf = tflite_evaluator.predict(greeting, lang='ja', threshold=0.0)
-        assert intent == 'greeting', \
-            f'"{greeting}" → expected greeting, got {intent} ({conf:.2f})'
+        """All common JA greetings should classify as greeting tag."""
+        tag, conf = tflite_evaluator.predict(greeting, lang='ja', threshold=0.0)
+        assert tag == 'greeting', \
+            f'"{greeting}" → expected greeting, got {tag} ({conf:.2f})'
 
     def test_greeting_response_is_welcoming(self, export_artifacts):
         """Greeting response should contain a welcome/help message."""
         _, responses, _, _ = export_artifacts
         if 'greeting' not in responses:
-            pytest.skip('greeting intent not in responses')
+            pytest.skip('greeting tag not in responses')
         en = responses['greeting']['en'].lower()
         ja = responses['greeting']['ja']
         assert any(w in en for w in ('hello', 'hi', 'welcome', 'help', 'support', 'bot')), \
@@ -415,28 +422,38 @@ class TestConversationFlow:
         End-to-end: simulate the full app flow.
 
         Turn 1: "hi, can you help me?"
-          → greeting intent → show welcome message
+          → greeting tag → show welcome message
         Turn 2: "i need to change password"
-          → account_password intent → show detailed answer
+          → password tag → show detailed answer
 
         This is exactly what the mobile app does.
         """
         _, responses, _, _ = export_artifacts
 
         # Turn 1: Greeting
-        intent1, conf1 = tflite_evaluator.predict(
+        tag1, conf1 = tflite_evaluator.predict(
             'hi, can you help me?', lang='en', threshold=0.85,
         )
-        if intent1 != 'out_of_scope' and intent1 in responses:
-            resp1 = responses[intent1]
-            assert resp1['en'].strip(), f'Empty EN response for {intent1}'
+        if tag1 != 'unknown' and tag1 in responses:
+            resp1 = responses[tag1]
+            assert resp1['en'].strip(), f'Empty EN response for {tag1}'
 
         # Turn 2: Real question
-        intent2, conf2 = tflite_evaluator.predict(
+        tag2, conf2 = tflite_evaluator.predict(
             'i need to change password', lang='en', threshold=0.85,
         )
-        if intent2 != 'out_of_scope' and intent2 in responses:
-            resp2 = responses[intent2]
+        if tag2 != 'unknown' and tag2 in responses:
+            resp2 = responses[tag2]
             assert resp2['type'] == 'answer', \
                 f'password question should get an answer, got type={resp2["type"]}'
-            assert resp2['en'].strip(), f'Empty EN response for {intent2}'
+            assert resp2['en'].strip(), f'Empty EN response for {tag2}'
+
+    def test_get_response_flow(self, tflite_evaluator, export_artifacts):
+        """Test the get_response() method returns {type, tag, response_text}."""
+        _, responses, _, _ = export_artifacts
+        tflite_evaluator._responses = responses
+
+        resp = tflite_evaluator.get_response('hi, can you help me?', lang='en')
+        assert resp['tag'] in ('greeting', 'unknown')
+        assert 'type' in resp
+        assert 'response_text' in resp
