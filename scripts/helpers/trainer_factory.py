@@ -68,15 +68,23 @@ def build_trainer(base_model, kept_ids, num_labels, train_ds, val_ds, tokenizer)
         classifier.base_model.embeddings.word_embeddings = base_model.embeddings.word_embeddings
     classifier.config.vocab_size = len(kept_ids)
 
-    # Freeze pretrained transformer layers.
-    # With few samples (<500), fine-tuning all params causes overfitting.
+    # Freeze all pretrained layers first
     for param in classifier.base_model.parameters():
         param.requires_grad = False
 
-    # Unfreeze pooler — E5/sentence-transformer models use mean pooling
-    # during pretraining, so the CLS pooler needs to adapt for classification.
+    # Unfreeze pooler
     if hasattr(classifier.base_model, 'pooler') and classifier.base_model.pooler is not None:
         for param in classifier.base_model.pooler.parameters():
+            param.requires_grad = True
+
+    # Unfreeze last N transformer layers for better feature adaptation.
+    # Head-only training gives correct predictions but low confidence (~0.4).
+    # Unfreezing last 2 layers lets the model sharpen its representations.
+    UNFREEZE_LAYERS = 2
+    encoder = classifier.base_model.encoder
+    total_layers = len(encoder.layer)
+    for layer_idx in range(total_layers - UNFREEZE_LAYERS, total_layers):
+        for param in encoder.layer[layer_idx].parameters():
             param.requires_grad = True
 
     classifier.to(DEVICE)
@@ -85,18 +93,18 @@ def build_trainer(base_model, kept_ids, num_labels, train_ds, val_ds, tokenizer)
     trainable_params = sum(p.numel() for p in classifier.parameters() if p.requires_grad)
     frozen_params = total_params - trainable_params
     print(f"  Total: {total_params:,} params, {num_labels} tags")
-    print(f"  Trainable: {trainable_params:,} (pooler + classifier head)")
-    print(f"  Frozen: {frozen_params:,} (pretrained base)")
+    print(f"  Trainable: {trainable_params:,} (last {UNFREEZE_LAYERS} layers + pooler + head)")
+    print(f"  Frozen: {frozen_params:,} (pretrained base layers 0-{total_layers - UNFREEZE_LAYERS - 1})")
 
-    # Training arguments — higher LR for head-only training
-    head_lr = 1e-3
+    # Lower LR for fine-tuning transformer layers (not just head)
+    finetune_lr = 2e-4
 
     training_args = TrainingArguments(
         output_dir=MODEL_DIR,
         num_train_epochs=NUM_EPOCHS,
         per_device_train_batch_size=BATCH_SIZE,
         per_device_eval_batch_size=min(BATCH_SIZE * 2, 4096),
-        learning_rate=head_lr,
+        learning_rate=finetune_lr,
         weight_decay=0.01,
         warmup_ratio=0.1,
         lr_scheduler_type='cosine',
@@ -121,7 +129,7 @@ def build_trainer(base_model, kept_ids, num_labels, train_ds, val_ds, tokenizer)
         compute_metrics=compute_metrics,
     )
 
-    print(f"  Epochs: {NUM_EPOCHS}, Batch: {BATCH_SIZE}, LR: {head_lr}")
+    print(f"  Epochs: {NUM_EPOCHS}, Batch: {BATCH_SIZE}, LR: {finetune_lr}")
     return trainer, classifier
 
 

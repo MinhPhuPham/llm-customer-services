@@ -37,7 +37,7 @@ LANG_PREFIX = {'en': 'query: [EN]', 'ja': 'query: [JA]'}
 # TRAINING PARAMETERS
 # ===========================================================
 MAX_SEQ_LENGTH = 64
-CONFIDENCE_THRESHOLD = 0.85
+CONFIDENCE_THRESHOLD = 0.40
 
 
 # ===========================================================
