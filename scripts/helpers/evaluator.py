@@ -12,23 +12,25 @@ import time
 
 import numpy as np
 
-from scripts.config import MAX_SEQ_LENGTH, LANG_PREFIX, CONFIDENCE_THRESHOLD
+from scripts.config import MAX_SEQ_LENGTH, LANG_PREFIX, CONFIDENCE_THRESHOLD, CLARIFY_GAP
 
 
 class TFLiteEvaluator:
     """Evaluates a TFLite model with bilingual test cases."""
 
-    def __init__(self, tflite_path, tokenizer, label_map, responses=None):
+    def __init__(self, tflite_path, tokenizer, label_map, responses=None, qa_matcher=None):
         """
         Args:
             tflite_path: Path to .tflite model file.
             tokenizer: HuggingFace tokenizer.
             label_map: Dict[int, str] mapping label ID → tag name.
             responses: Optional dict from responses.json (tag → {en, ja, type}).
+            qa_matcher: Optional QAMatcher for smart response matching.
         """
         self.tokenizer = tokenizer
         self.label_map = label_map
         self._responses = responses or {}
+        self._qa_matcher = qa_matcher
 
         # Lazy import — tensorflow only loaded when evaluator is used
         import tensorflow as tf
@@ -53,20 +55,8 @@ class TFLiteEvaluator:
             self._inputs['input_ids'] = (self.inp_details[0]['index'], self.inp_details[0]['dtype'])
             self._inputs['attention_mask'] = (self.inp_details[1]['index'], self.inp_details[1]['dtype'])
 
-    def predict(self, text, lang='en', threshold=None):
-        """
-        Run inference on a single text.
-
-        Args:
-            text: Raw query text (without language prefix).
-            lang: 'en' or 'ja'.
-            threshold: Confidence threshold (default: config value).
-
-        Returns:
-            (tag, confidence): Predicted tag and confidence score.
-        """
-        threshold = threshold if threshold is not None else CONFIDENCE_THRESHOLD
-
+    def _run_inference(self, text, lang='en'):
+        """Run raw inference, return probability array."""
         full_text = f"{LANG_PREFIX[lang]} {text}"
         enc = self.tokenizer(
             full_text,
@@ -85,32 +75,106 @@ class TFLiteEvaluator:
         logits = self.interpreter.get_tensor(self.out_details[0]['index'])
         logits_stable = logits - logits.max(axis=-1, keepdims=True)
         probs = np.exp(logits_stable) / np.exp(logits_stable).sum(axis=-1, keepdims=True)
-        pred_id = np.argmax(probs, axis=-1)[0]
-        confidence = probs[0][pred_id]
+        return probs[0]
+
+    def predict(self, text, lang='en', threshold=None):
+        """
+        Run inference on a single text.
+
+        Returns:
+            (tag, confidence): Predicted tag and confidence score.
+        """
+        threshold = threshold if threshold is not None else CONFIDENCE_THRESHOLD
+        probs = self._run_inference(text, lang)
+        pred_id = np.argmax(probs)
+        confidence = float(probs[pred_id])
         tag = self.label_map[int(pred_id)]
 
         if confidence < threshold:
             return 'unknown', confidence
         return tag, confidence
 
-    def get_response(self, text, lang='en', threshold=None):
+    def predict_top_n(self, text, lang='en', n=3):
         """
-        Classify text and return full response dict for the mobile app.
-
-        Args:
-            text: Raw query text (without language prefix).
-            lang: 'en' or 'ja'.
-            threshold: Confidence threshold (default: config value).
+        Return top-N predictions sorted by confidence.
 
         Returns:
-            dict: {type, tag, response_text}
+            List of (tag, confidence) tuples, highest first.
         """
-        tag, confidence = self.predict(text, lang=lang, threshold=threshold)
+        probs = self._run_inference(text, lang)
+        top_ids = np.argsort(probs)[::-1][:n]
+        return [(self.label_map[int(i)], float(probs[i])) for i in top_ids]
+
+    def get_response(self, text, lang='en', threshold=None, clarify_gap=None):
+        """
+        Classify text and return the best matching response.
+
+        Flow:
+        1. If confident → return single response (answer/action_*/support)
+        2. If ambiguous (top-2 scores close) → return "clarify" with options
+        3. If low confidence → return "reject" (unknown)
+
+        Returns:
+            dict: {type, tag, response_text} or
+            dict: {type: "clarify", options: [...], response_text: "..."}
+        """
+        threshold = threshold if threshold is not None else CONFIDENCE_THRESHOLD
+        clarify_gap = clarify_gap if clarify_gap is not None else CLARIFY_GAP
+
+        top = self.predict_top_n(text, lang=lang, n=3)
+        top1_tag, top1_conf = top[0]
+        top2_tag, top2_conf = top[1] if len(top) > 1 else ('', 0.0)
+
+        # Below threshold → reject
+        if top1_conf < threshold:
+            resp = self._responses.get('unknown', {})
+            return {
+                'type': 'reject',
+                'tag': 'unknown',
+                'response_text': resp.get(lang, ''),
+            }
+
+        # Ambiguous: top-2 are close AND both above threshold → ask user to clarify
+        gap = top1_conf - top2_conf
+        if gap < clarify_gap and top2_conf >= threshold and top1_tag != top2_tag:
+            options = []
+            for tag, conf in top[:2]:
+                resp = self._responses.get(tag, {})
+                options.append({
+                    'tag': tag,
+                    'type': resp.get('type', 'answer'),
+                    'label': resp.get(f'label_{lang}', '') or tag.replace('_', ' ').title(),
+                    'confidence': round(conf, 2),
+                })
+
+            clarify_text = {
+                'en': "I'd like to help! Could you tell me which of these you need?",
+                'ja': 'お手伝いしたいです！以下のどちらをお求めですか？',
+            }
+            return {
+                'type': 'clarify',
+                'tag': 'ambiguous',
+                'options': options,
+                'response_text': clarify_text.get(lang, clarify_text['en']),
+            }
+
+        # Confident → return single response
+        tag = top1_tag
         resp = self._responses.get(tag, {})
+        resp_type = resp.get('type', 'reject')
+
+        if self._qa_matcher:
+            response_text = self._qa_matcher.find_best_answer(text, tag, lang)
+        else:
+            response_text = ''
+
+        if not response_text:
+            response_text = resp.get(lang, '')
+
         return {
-            'type': resp.get('type', 'reject'),
+            'type': resp_type,
             'tag': tag,
-            'response_text': resp.get(lang, ''),
+            'response_text': response_text,
         }
 
     def run_validation(self, val_texts, val_labels, label_encoder):

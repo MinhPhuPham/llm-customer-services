@@ -34,6 +34,7 @@ def load_model():
     label_map_path = os.path.join(EXPORT_DIR, 'label_map.json')
     responses_path = os.path.join(EXPORT_DIR, 'responses.json')
     token_map_path = os.path.join(EXPORT_DIR, 'token_id_map.json')
+    qa_index_path = os.path.join(EXPORT_DIR, 'qa_index.json')
 
     missing = [p for p in [tflite_path, label_map_path, responses_path, token_map_path]
                if not os.path.exists(p)]
@@ -53,11 +54,19 @@ def load_model():
     from scripts.config import BASE_MODEL
     from scripts.helpers.vocab_pruner import RemappedTokenizer
 
-    tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL)
-    tokenizer = RemappedTokenizer(tokenizer, old_to_new)
+    base_tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL)
+    remapped = RemappedTokenizer(base_tokenizer, old_to_new)
+
+    # Load QA matcher for smart responses (optional)
+    qa_matcher = None
+    if os.path.exists(qa_index_path):
+        from scripts.helpers.qa_matcher import QAMatcher
+        qa_matcher = QAMatcher(qa_index_path, base_tokenizer)
 
     from scripts.helpers.evaluator import TFLiteEvaluator
-    evaluator = TFLiteEvaluator(tflite_path, tokenizer, label_map, responses)
+    evaluator = TFLiteEvaluator(
+        tflite_path, remapped, label_map, responses, qa_matcher=qa_matcher,
+    )
 
     return evaluator, label_map, responses
 
@@ -82,7 +91,14 @@ TYPE_COLORS = {
     'answer': 'GREEN',
     'support': 'YELLOW',
     'reject': 'RED',
+    'clarify': 'MAGENTA',
 }
+
+
+def get_type_color(resp_type):
+    if resp_type.startswith('action_'):
+        return 'CYAN'
+    return TYPE_COLORS.get(resp_type, 'NC')
 
 
 def main():
@@ -171,46 +187,36 @@ def main():
                 print(f"  {C.DIM}Unknown command. Try: /en /ja /tags /threshold /debug /q{C.NC}\n")
                 continue
 
-        # Inference
+        # Inference — smart response matching
         t0 = time.perf_counter()
-        tag, confidence = evaluator.predict(user_input, lang=lang, threshold=threshold)
+        result = evaluator.get_response(user_input, lang=lang, threshold=threshold)
+        tag = result['tag']
+        resp_type = result['type']
+        resp_text = result['response_text']
+        _, confidence = evaluator.predict(user_input, lang=lang, threshold=threshold)
         latency = (time.perf_counter() - t0) * 1000
-
-        resp = responses.get(tag, {})
-        resp_type = resp.get('type', 'reject')
-        resp_text = resp.get(lang, '')
-        type_color = getattr(C, TYPE_COLORS.get(resp_type, 'NC'))
+        type_color = getattr(C, get_type_color(resp_type))
 
         # Response
         print()
-        print(f"  {C.BOLD}  Bot:{C.NC} {resp_text}")
-        print(f"  {C.DIM}       [{type_color}{resp_type}{C.NC}{C.DIM}] tag={tag}  conf={confidence:.2f}  {latency:.0f}ms{C.NC}")
+        if resp_type == 'clarify':
+            print(f"  {C.BOLD}  Bot:{C.NC} {resp_text}")
+            for i, opt in enumerate(result.get('options', []), 1):
+                opt_color = getattr(C, get_type_color(opt['type']))
+                print(f"  {C.BOLD}       {i}. {opt['label']}{C.NC} {C.DIM}[{opt_color}{opt['type']}{C.NC}{C.DIM}]{C.NC}")
+            print(f"  {C.DIM}       conf={confidence:.2f}  {latency:.0f}ms{C.NC}")
+        else:
+            action_hint = ''
+            if resp_type.startswith('action_'):
+                action_name = resp_type.replace('action_', '')
+                action_hint = f"\n  {C.CYAN}       ⚡ App action: {action_name}{C.NC}"
+            print(f"  {C.BOLD}  Bot:{C.NC} {resp_text}{action_hint}")
+            print(f"  {C.DIM}       [{type_color}{resp_type}{C.NC}{C.DIM}] tag={tag}  conf={confidence:.2f}  {latency:.0f}ms{C.NC}")
 
         if debug:
-            # Show all tag probabilities
-            full_text = f"{evaluator.tokenizer._tokenizer.pad_token or ''}"
-            import numpy as np
-            from scripts.config import LANG_PREFIX, MAX_SEQ_LENGTH
-
-            full_text = f"{LANG_PREFIX[lang]} {user_input}"
-            enc = evaluator.tokenizer(
-                full_text, return_tensors='np',
-                padding='max_length', truncation=True,
-                max_length=MAX_SEQ_LENGTH,
-            )
-            ids_idx, ids_dtype = evaluator._inputs['input_ids']
-            mask_idx, mask_dtype = evaluator._inputs['attention_mask']
-            evaluator.interpreter.set_tensor(ids_idx, enc['input_ids'].astype(ids_dtype))
-            evaluator.interpreter.set_tensor(mask_idx, enc['attention_mask'].astype(mask_dtype))
-            evaluator.interpreter.invoke()
-            logits = evaluator.interpreter.get_tensor(evaluator.out_details[0]['index'])
-            logits_stable = logits - logits.max(axis=-1, keepdims=True)
-            probs = np.exp(logits_stable) / np.exp(logits_stable).sum(axis=-1, keepdims=True)
-
-            scored = [(label_map[i], float(probs[0][i])) for i in range(len(label_map))]
-            scored.sort(key=lambda x: -x[1])
+            top_n = evaluator.predict_top_n(user_input, lang=lang, n=5)
             print(f"  {C.DIM}       scores: ", end='')
-            parts = [f"{t}={p:.2f}" for t, p in scored]
+            parts = [f"{t}={p:.2f}" for t, p in top_n]
             print(f"{' | '.join(parts)}{C.NC}")
 
         print()

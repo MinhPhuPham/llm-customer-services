@@ -162,12 +162,14 @@ class TestDataPipeline:
 
     def test_dp07_responses_json(self, export_artifacts):
         _, _, _, rj = export_artifacts
-        valid_types = {'answer', 'support', 'reject'}
+        valid_types = {'answer', 'support', 'reject', 'clarify'}
         for tag, resp in rj.items():
             assert 'en' in resp, f'{tag} missing "en"'
             assert 'ja' in resp, f'{tag} missing "ja"'
             assert 'type' in resp, f'{tag} missing "type"'
-            assert resp['type'] in valid_types
+            resp_type = resp['type']
+            assert resp_type in valid_types or resp_type.startswith('action_'), \
+                f'{tag} has invalid type: {resp_type}'
 
     def test_dp08_all_tags_have_responses(self, export_artifacts):
         _, _, lm, rj = export_artifacts

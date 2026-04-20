@@ -39,6 +39,9 @@ LANG_PREFIX = {'en': 'query: [EN]', 'ja': 'query: [JA]'}
 MAX_SEQ_LENGTH = 64
 CONFIDENCE_THRESHOLD = 0.40
 
+# When top-2 predictions are this close, ask user to clarify
+CLARIFY_GAP = 0.15
+
 
 # ===========================================================
 # PLATFORM DETECTION
